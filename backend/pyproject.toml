@@ -1,0 +1,78 @@
+[project]
+name = "banking-backend"
+version = "0.1.0"
+description = "Personal banking platform backend — double-entry ledger on Django + DRF"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "django>=5.2,<6.0",
+    "djangorestframework>=3.16",
+    "djangorestframework-simplejwt>=5.5",
+    "django-environ>=0.12",
+    "psycopg[binary]>=3.2",
+    "uuid6>=2024.7.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-django>=4.11",
+    "pytest-cov>=6.0",
+    "factory-boy>=3.3",
+    "ruff>=0.11",
+    "mypy>=1.15",
+    "django-stubs[compatible-mypy]>=5.2",
+    "djangorestframework-stubs>=3.16",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "C4",  # comprehensions
+    "DJ",  # django
+    "SIM", # simplify
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Settings modules compose via star imports by design (ADR-0004).
+"config/settings/*" = ["F401", "F403", "F405"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+mypy_path = "."
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["*.migrations.*"]
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# django-environ ships no type stubs
+module = ["environ.*"]
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.dev"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.dev"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["."]
+omit = ["manage.py", "*/migrations/*", "config/asgi.py", "config/wsgi.py"]
