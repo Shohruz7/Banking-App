@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Django
+*.sqlite3
+staticfiles/
+media/
+
+# Environment / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Node (frontend, Week 7+)
+node_modules/
+frontend/dist/
+
+# Local design docs (kept out of the published repo)
+docs/
+
+# Editors & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
