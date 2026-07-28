@@ -1,11 +1,12 @@
-"""Post a couple of toy balanced entries by hand for visual feedback (Week 2).
+"""Post a few toy entries by hand for visual feedback (Weeks 2–3).
 
     uv run python manage.py post_demo_entries
 
-Seeds a demo user with a checking and an equity account, posts two balanced entries through the
-posting service, and prints each account's derived balance. Idempotent on the user/accounts
-(get-or-create) but appends fresh entries each run — this is a build-time sanity toy, not the
-Faker seed script (that lands in Week 8).
+Seeds a demo user with checking, savings, and an equity account; posts two balanced entries
+through the posting service and one transfer through the transfer service; then prints each
+account's derived balance. Idempotent on the user/accounts (get-or-create) but appends fresh
+entries each run — this is a build-time sanity toy, not the Faker seed script (that lands in
+Week 8).
 """
 
 from decimal import Decimal
@@ -15,7 +16,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 
 from accounts.models import Account, AccountType
-from ledger.services import LineSpec, get_balance, post_entry
+from ledger.services import LineSpec, get_balance, post_entry, transfer
 
 
 class Command(BaseCommand):
@@ -31,6 +32,11 @@ class Command(BaseCommand):
         checking, _ = Account.objects.get_or_create(
             owner=user,
             name="Demo Checking",
+            defaults={"account_type": AccountType.ASSET},
+        )
+        savings, _ = Account.objects.get_or_create(
+            owner=user,
+            name="Demo Savings",
             defaults={"account_type": AccountType.ASSET},
         )
         opening_equity, _ = Account.objects.get_or_create(
@@ -56,6 +62,17 @@ class Command(BaseCommand):
             ],
         )
 
+        # Week 3: money between two accounts goes through the transfer service, which locks both
+        # rows and checks the balance under that lock.
+        entry, created = transfer(
+            source=checking,
+            destination=savings,
+            amount=Decimal("75.25"),
+            description="Demo transfer to savings",
+        )
+        verb = "Posted" if created else "Replayed"
+        self.stdout.write(f"{verb} transfer {entry.id}")
+
         self.stdout.write(self.style.SUCCESS("Posted demo entries. Derived balances:"))
-        for account in (checking, opening_equity):
+        for account in (checking, savings, opening_equity):
             self.stdout.write(f"  {account.name}: {get_balance(account)}")
