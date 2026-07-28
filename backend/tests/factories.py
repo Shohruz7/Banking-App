@@ -49,3 +49,18 @@ def post_balanced_entry(
             LineSpec(account=destination, amount=amount),
         ],
     )
+
+
+def fund_account(account: Account, amount: Decimal) -> JournalEntry:
+    """Give an account a starting balance, posted against a fresh equity account.
+
+    Money has to come from somewhere for the entry to balance — an opening-balances equity
+    account is the accounting-correct source, and it keeps funding out of the transfer path
+    under test.
+    """
+    opening = AccountFactory.create(
+        owner=account.owner,
+        name="Opening balances",
+        account_type=AccountType.EQUITY,
+    )
+    return post_balanced_entry(opening, account, amount, description="opening balance")
