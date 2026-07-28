@@ -5,13 +5,13 @@ query regardless of account count.
 """
 
 from decimal import Decimal
+from typing import cast
 
 from django.contrib import admin
-from django.db.models import DecimalField, QuerySet, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import QuerySet
 from django.http import HttpRequest
 
-from .models import Account
+from .models import Account, AccountQuerySet
 
 
 @admin.register(Account)
@@ -22,21 +22,11 @@ class AccountAdmin(admin.ModelAdmin):
     readonly_fields = ("id", "created_at")
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[Account]:
-        return (
-            super()
-            .get_queryset(request)
-            .select_related("owner")
-            .annotate(
-                _balance=Coalesce(
-                    Sum("lines__amount"),
-                    Value(
-                        Decimal("0.0000"),
-                        output_field=DecimalField(max_digits=20, decimal_places=4),
-                    ),
-                )
-            )
-        )
+        # ModelAdmin.get_queryset is typed as a plain QuerySet; the model's manager is built from
+        # AccountQuerySet, so the balance annotation is genuinely there.
+        queryset = cast(AccountQuerySet, super().get_queryset(request))
+        return queryset.select_related("owner").with_balance()
 
-    @admin.display(description="Balance", ordering="_balance")
+    @admin.display(description="Balance", ordering="balance")
     def balance(self, obj: Account) -> Decimal:
-        return obj._balance  # type: ignore[attr-defined]  # annotated in get_queryset
+        return obj.balance  # type: ignore[attr-defined]  # annotated by with_balance()
