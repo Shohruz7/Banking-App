@@ -90,6 +90,9 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    # Locked shut by default; endpoints that are genuinely public (health, token issuance) opt
+    # out explicitly. The safe direction to forget in is "denied".
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "EXCEPTION_HANDLER": "common.exceptions.api_exception_handler",
     "DEFAULT_PAGINATION_CLASS": "common.pagination.DefaultCursorPagination",
     "PAGE_SIZE": 20,
