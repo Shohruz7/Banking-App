@@ -16,6 +16,9 @@ class JournalEntry(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid6.uuid7, editable=False)
     description = models.CharField(max_length=255)
+    # Client-supplied retry token (ADR-0010). Unique, but NULLs don't collide in Postgres, so
+    # entries posted without a key — everything that isn't a transfer — are unaffected.
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
