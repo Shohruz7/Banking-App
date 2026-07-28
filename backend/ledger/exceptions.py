@@ -16,3 +16,7 @@ class InvalidEntryError(LedgerError):
 
 class UnbalancedEntryError(LedgerError):
     """The entry's signed line amounts do not sum to zero."""
+
+
+class InsufficientFundsError(LedgerError):
+    """The source account's balance is less than the amount being moved out of it (ADR-0010)."""
