@@ -4,10 +4,13 @@ A full-stack personal banking and brokerage platform built around a **double-ent
 balance invariant is enforced by the database itself**. Every money movement — transfers, trades,
 fees — is a balanced, atomic, idempotent journal entry.
 
-> Status: Week 2 — ledger core. Accounts and journal entries post through a single balanced,
-> atomic primitive; the zero-sum invariant is enforced at COMMIT by a deferred Postgres
-> constraint trigger, so the ledger cannot go unbalanced even via raw SQL. Balances are derived,
-> money is exact `Decimal` (ADR-0009), and the suite proves each invariant. Architecture
+> Status: Week 3 — transfers. Money moves between accounts through one service that locks both
+> account rows in a fixed order (so opposing transfers queue instead of deadlocking), checks the
+> balance under that lock (so a race can't overdraw), and replays instead of double-posting when a
+> request carries an idempotency key. Underneath it, the Week 2 ledger core: every movement is a
+> balanced journal entry whose zero-sum invariant is enforced at COMMIT by a deferred Postgres
+> constraint trigger, so the ledger cannot go unbalanced even via raw SQL. The first REST
+> endpoints — accounts, transaction history, transfers — are live under `/api/v1/`. Architecture
 > decisions live as ADRs in [docs/adr](docs/adr/).
 
 ## Stack
