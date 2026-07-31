@@ -32,6 +32,9 @@ frontend/dist/
 
 # Local design docs (kept out of the published repo)
 docs/
+# Weekly plans and build logs stay local too — working notes, not published artifacts.
+# The design-document PDF stays tracked.
+Documentation/*.md
 
 # Editors & OS
 .DS_Store
