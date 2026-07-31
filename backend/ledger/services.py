@@ -17,11 +17,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.db import IntegrityError, transaction
 from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 
 from accounts.models import Account
+from audit.models import AuditAction
+from audit.services import record_audit
 from common.money import quantize_money
 
 from .exceptions import InsufficientFundsError, InvalidEntryError, UnbalancedEntryError
@@ -95,6 +98,7 @@ def transfer(
     amount: Decimal,
     description: str = "Transfer",
     idempotency_key: str | None = None,
+    actor: User | None = None,
 ) -> tuple[JournalEntry, bool]:
     """Move ``amount`` from ``source`` to ``destination`` as one balanced two-line entry.
 
@@ -104,6 +108,14 @@ def transfer(
     Raises ``InvalidEntryError`` for a non-positive amount or a self-transfer, and
     ``InsufficientFundsError`` when the source cannot cover the amount (ADR-0010: no overdraft;
     transferring the balance exactly to zero is allowed).
+
+    ``actor`` is *who moved the money* — a domain fact about the transfer, and the one HTTP-adjacent
+    thing this signature admits (ADR-0014). The audit row's ip, user agent and request id ride the
+    ambient context instead, because those are transport facts the ledger has no business knowing.
+    The successful-posting audit row is written **inside** the transaction deliberately: if the
+    transaction aborts, the row vanishes with the entry, so the log cannot claim a movement that
+    never committed. A *rejected* transfer is audited by the caller, after the failed transaction
+    has unwound — a write attempted here would be rolled back by the very exception it records.
     """
     amount = quantize_money(amount)
     if amount <= _ZERO:
@@ -115,6 +127,7 @@ def transfer(
     if idempotency_key is not None:
         replayed = _entry_for_key(idempotency_key)
         if replayed is not None:
+            _audit_replay(replayed, actor, idempotency_key)
             return replayed, False
 
     try:
@@ -125,6 +138,7 @@ def transfer(
             if idempotency_key is not None:
                 replayed = _entry_for_key(idempotency_key)
                 if replayed is not None:
+                    _audit_replay(replayed, actor, idempotency_key)
                     return replayed, False
 
             balance = get_balance(source)
@@ -141,6 +155,18 @@ def transfer(
                 ],
                 idempotency_key=idempotency_key,
             )
+            record_audit(
+                action=AuditAction.TRANSFER_POSTED,
+                actor=actor,
+                target_type="journal_entry",
+                target_id=str(entry.pk),
+                context={
+                    "amount": amount,
+                    "source_account": str(source.pk),
+                    "destination_account": str(destination.pk),
+                    "idempotency_key": idempotency_key,
+                },
+            )
         return entry, True
     except IntegrityError:
         # Two first attempts with the same key raced past the checks above and the unique
@@ -151,7 +177,23 @@ def transfer(
         replayed = _entry_for_key(idempotency_key)
         if replayed is None:
             raise
+        _audit_replay(replayed, actor, idempotency_key)
         return replayed, False
+
+
+def _audit_replay(entry: JournalEntry, actor: User | None, idempotency_key: str | None) -> None:
+    """Record that a retry returned an already-posted entry rather than moving money again.
+
+    Worth a row of its own: "this request arrived twice" is a fact about client behaviour, and
+    without it a replay is indistinguishable in the log from a request that never happened.
+    """
+    record_audit(
+        action=AuditAction.TRANSFER_REPLAYED,
+        actor=actor,
+        target_type="journal_entry",
+        target_id=str(entry.pk),
+        context={"idempotency_key": idempotency_key},
+    )
 
 
 def _lock_accounts(source: Account, destination: Account) -> None:
