@@ -1,32 +1,51 @@
 # Personal Banking Platform
 
-A full-stack personal banking and brokerage platform built around a **double-entry ledger whose
-balance invariant is enforced by the database itself**. Every money movement — transfers, trades,
-fees — is a balanced, atomic, idempotent journal entry.
+A personal banking and brokerage platform built around a **double-entry ledger whose balance
+invariant is enforced by the database itself**. Every money movement — transfers, trades, fees —
+is a balanced, atomic, idempotent journal entry.
 
-> Status: Week 4 — auth, MFA, audit. Real authentication now: registration, TOTP MFA enforced at
-> login via a two-step challenge with QR provisioning, and refresh tokens that rotate. Every token
-> is bound to a revocable session, so replaying a rotated refresh token takes down the *whole
-> family* — the successor an attacker holds dies with it, which stock rotate-and-blacklist does not
-> do — and logging out kills access tokens immediately rather than leaving a 15-minute window.
-> Every auth event and every money movement lands in an append-only audit log that Postgres itself
-> refuses to let anyone `UPDATE` or `DELETE`. Scoped rate limits sit on the endpoints worth
-> attacking.
->
-> Underneath it, the Week 2–3 ledger: every movement is a balanced journal entry whose zero-sum
-> invariant is enforced at COMMIT by a deferred Postgres constraint trigger, and transfers lock both
-> account rows in a fixed order (so opposing transfers queue instead of deadlocking), check the
-> balance under that lock (so a race can't overdraw), and replay instead of double-posting when a
-> request carries an idempotency key. Architecture decisions live as ADRs in [docs/adr](docs/adr/).
+The design goal is a system that stays correct under the conditions that actually break financial
+software: concurrent writes to the same account, retried requests, and partial failure. Where a
+rule matters, it is enforced somewhere it cannot be bypassed — usually Postgres — rather than by
+convention in application code.
+
+## What it does
+
+**Ledger.** Accounts hold no balance column; a balance is the sum of an account's signed journal
+lines, derived on read. Every entry's lines must sum to exactly zero, and that invariant is
+enforced at `COMMIT` by a deferred Postgres constraint trigger — so the ledger cannot go
+unbalanced even if something writes to it via raw SQL. Money is `NUMERIC(20,4)`, always `Decimal`,
+rounded half-even in exactly one place.
+
+**Transfers.** A transfer is just a two-line journal entry, so it inherits every ledger guarantee.
+On top of that it locks both account rows in a fixed order — ascending UUID, regardless of
+direction — so two opposing transfers queue instead of deadlocking, and it reads the source
+balance *under that lock*, so a race cannot overdraw an account. A request carrying an idempotency
+key replays instead of double-posting: the retry returns the original entry rather than an error.
+
+**Authentication.** Registration, then login that issues a short-lived access token and a rotating
+refresh token. TOTP MFA is enforced at login through a two-step challenge, with QR provisioning at
+enrolment and each code burned after use so it cannot be replayed. Every token is bound to a
+revocable session via a `sid` claim, which is what makes an *access* token revocable — a blacklist
+of refresh tokens structurally cannot do that. Replaying a rotated refresh token revokes the
+entire token family, so the successor an attacker holds dies along with the one they replayed.
+
+**Audit.** Every auth event and every money movement lands in an append-only log that Postgres
+itself refuses to let anyone `UPDATE` or `DELETE`. Ledger audit rows are written inside the same
+transaction as the posting, so the log and the ledger commit or vanish together.
+
+**API.** Everything is authenticated by default; public endpoints opt out explicitly. Errors share
+a single envelope. Rate limits sit on the endpoints worth attacking — registration, login, MFA,
+refresh, and transfers each have their own ceiling.
 
 ## Stack
 
-| Layer     | Choice                                                        |
-| --------- | ------------------------------------------------------------- |
-| Backend   | Python 3.12 · Django 5.2 · Django REST Framework · SimpleJWT  |
-| Data      | PostgreSQL 16 · Redis 7                                       |
-| Tooling   | uv (env + lockfile) · ruff (lint + format) · mypy · pytest    |
-| Frontend  | React + TypeScript (Week 7)                                   |
+| Layer   | Choice                                                       |
+| ------- | ------------------------------------------------------------ |
+| Backend | Python 3.12 · Django 5.2 · Django REST Framework · SimpleJWT |
+| Data    | PostgreSQL 16 · Redis 7                                      |
+| Auth    | JWT with rotating refresh · TOTP MFA (pyotp)                 |
+| Tooling | uv (env + lockfile) · ruff (lint + format) · mypy · pytest   |
 
 ## Quickstart
 
@@ -67,8 +86,18 @@ explicitly.
 
 Errors share one envelope: `{"error": {"code": ..., "message": ..., "details": {...}}}`.
 An account owned by someone else returns 404, never 403 — a 403 would confirm it exists.
+Money crosses the wire as a string (`"150.0000"`), never a float.
 
-## Development
+## Testing
+
+The suite carries more code than the application does — roughly 2,900 lines of tests against
+2,600 of application code — because the invariants are the product. It proves the things that
+would be expensive to get wrong: that an unbalanced entry cannot commit, that concurrent transfers
+cannot overdraw an account or deadlock each other, that a retried transfer posts once, that a
+replayed refresh token takes down its whole family, and that a forged token is rejected.
+
+The concurrency and security tests were each checked against a deliberately broken implementation
+first, to confirm they actually fail when the property they claim to protect is removed.
 
 ```sh
 cd backend
@@ -90,16 +119,25 @@ backend/
   audit/      the append-only audit log
   common/     money, pagination, error envelope, shared helpers
   tests/
-frontend/     React SPA (placeholder until Week 7)
-docs/adr/     Architecture Decision Records
-docs/         ER diagram and design artifacts
+frontend/     web client (not yet implemented)
 ```
 
 ## Architecture decisions
 
-Key decisions are recorded as short ADRs — see the [index](docs/adr/README.md).
-Highlights: monorepo layout, UUIDv7 primary keys, versioned API with a single error
-envelope and cursor pagination, single-currency USD (multi-currency deferred by design),
-a simplified signed ledger where every journal entry's lines sum to zero, token sessions
-that make access tokens revocable and refresh-token reuse detectable, and an audit log
-whose immutability is enforced by the database rather than by convention.
+Design decisions are recorded as ADRs, each framed as *"X over Y"* with the tradeoff stated
+explicitly. The ones that shape the system most:
+
+- **A simplified signed ledger** over full normal-balance accounting — every entry's lines sum to
+  zero, and `account_type` is recorded without yet driving debit/credit signs.
+- **Balances derived on read** over a denormalized balance column, which trades a cheap read for
+  an invalidation problem the ledger is too young to need.
+- **Transfers as journal entries** over a dedicated transfer table, so there is only one
+  definition of whether a transfer happened.
+- **Deterministic lock ordering** over relying on deadlock detection and retries, which turns a
+  correctness property into a latency problem that is far harder to test.
+- **Token sessions** over stock rotate-and-blacklist, making access tokens revocable and refresh
+  reuse detectable.
+- **An append-only audit log enforced by the database** over trusting application code not to
+  rewrite history.
+- **UUIDv7 primary keys**, **single-currency USD** with the currency field already in place, and a
+  **versioned API** with one error envelope and cursor pagination.
