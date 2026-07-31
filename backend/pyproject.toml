@@ -10,6 +10,11 @@ dependencies = [
     "django-environ>=0.12",
     "psycopg[binary]>=3.2",
     "uuid6>=2024.7.10",
+    "pyotp>=2.9",
+    "qrcode>=8.0",
+    # Cache backend for DRF throttle state (ADR-0015); also the Week 5 Celery broker and the
+    # Week 6 Channels layer. prod.py cannot boot without a shared cache, so it lands now.
+    "redis>=5.0",
 ]
 
 [dependency-groups]
@@ -18,6 +23,7 @@ dev = [
     "pytest-django>=4.11",
     "pytest-cov>=6.0",
     "factory-boy>=3.3",
+    "freezegun>=1.5",
     "ruff>=0.11",
     "mypy>=1.15",
     "django-stubs[compatible-mypy]>=5.2",
@@ -61,15 +67,15 @@ module = ["*.migrations.*"]
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-# django-environ ships no type stubs
-module = ["environ.*"]
+# django-environ and qrcode ship no type stubs
+module = ["environ.*", "qrcode.*"]
 ignore_missing_imports = true
 
 [tool.django-stubs]
 django_settings_module = "config.settings.dev"
 
 [tool.pytest.ini_options]
-DJANGO_SETTINGS_MODULE = "config.settings.dev"
+DJANGO_SETTINGS_MODULE = "config.settings.test"
 testpaths = ["tests"]
 addopts = "-q"
 
