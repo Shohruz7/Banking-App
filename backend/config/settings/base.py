@@ -35,6 +35,8 @@ INSTALLED_APPS = [
     "ledger",
     "identity",
     "audit",
+    "markets",
+    "trading",
 ]
 
 MIDDLEWARE = [
@@ -73,8 +75,41 @@ DATABASES = {
     "default": env.db("DATABASE_URL", default="postgres://banking:banking@localhost:5432/banking"),
 }
 
-# Unused until Celery/Channels arrive (Weeks 5–6); defined now so config has one home.
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+
+# Celery (ADR-0019). Redis is the broker; there is no result backend because nothing waits on a
+# return value — Beat fires tasks, tasks write rows, and the database is the result.
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL)
+CELERY_TIMEZONE = "UTC"
+# Surface a task exception instead of swallowing it into a result nobody reads.
+CELERY_TASK_EAGER_PROPAGATES = True
+# A tick that arrives late is worthless — a price is only current for one interval. Better to drop
+# a backlog than to replay a stale market at speed after an outage.
+CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": 3600}
+
+# How often the simulated market moves (ADR-0017). Scales the GBM step, so changing it changes the
+# clock the annualized drift and volatility are measured against, not just the row count.
+MARKET_TICK_SECONDS = env.int("MARKET_TICK_SECONDS", default=60)
+
+# The price source, resolved by dotted path the way Django resolves its own backends. Swapping in
+# a live market-data feed is this one string (ADR-0017).
+PRICE_SOURCE = env("PRICE_SOURCE", default="markets.pricing.GBMPriceSource")
+
+# Two entries, in a plain dict. django-celery-beat would buy a database-backed schedule editable
+# from the admin, at the cost of a dependency, a migration and a schedule that can drift from the
+# code that defines it — not worth it for a fixed pair.
+CELERY_BEAT_SCHEDULE = {
+    "advance-prices": {
+        "task": "markets.advance_prices",
+        "schedule": MARKET_TICK_SECONDS,
+    },
+    # A safety net, not the primary path: advance_prices chains matching after every tick. This
+    # catches orders that were resting when a chained dispatch was lost.
+    "match-resting-orders": {
+        "task": "trading.match_resting_orders",
+        "schedule": MARKET_TICK_SECONDS * 5,
+    },
+}
 
 # DRF keeps throttle history here (ADR-0015). The default LocMemCache is per-process, so behind
 # Week 8's multiple workers the effective rate becomes N × configured — prod.py overrides with no
@@ -132,6 +167,7 @@ REST_FRAMEWORK = {
         "mfa": "5/min",
         "refresh": "30/min",
         "transfer": "30/min",
+        "order": "30/min",
     },
 }
 

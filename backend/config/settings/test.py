@@ -20,3 +20,10 @@ CACHES = {
         "LOCATION": "banking-tests",
     }
 }
+
+# Celery runs inline (ADR-0019): `.delay()` executes in-process, so the suite needs no worker and
+# CI needs no Redis service. Note that `transaction.on_commit` callbacks still do not fire inside
+# an ordinary `django_db` test — the enclosing transaction never commits — so a test that asserts
+# on a chained task must use the `django_capture_on_commit_callbacks` fixture.
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_STORE_EAGER_RESULT = True

@@ -24,9 +24,12 @@ from identity.views import (
     SessionRefreshView,
 )
 from ledger.views import AccountTransactionsView, TransferView
+from markets.views import InstrumentPricesView, InstrumentViewSet
+from trading.views import HoldingsView, OrderCancelView, OrderDetailView, OrderListCreateView
 
 router = DefaultRouter()
 router.register("accounts", AccountViewSet, basename="account")
+router.register("instruments", InstrumentViewSet, basename="instrument")
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -48,5 +51,17 @@ urlpatterns = [
         name="account-transactions",
     ),
     path("api/v1/transfers/", TransferView.as_view(), name="transfer-create"),
+    # Declared ahead of the router so the instrument-scoped price route is unambiguous, the same
+    # reason the account-scoped history route is declared above.
+    path(
+        "api/v1/instruments/<str:symbol>/prices/",
+        InstrumentPricesView.as_view(),
+        name="instrument-prices",
+    ),
+    # Brokerage: place and manage orders, and read the positions they produced (Week 5).
+    path("api/v1/orders/", OrderListCreateView.as_view(), name="order-list-create"),
+    path("api/v1/orders/<uuid:pk>/", OrderDetailView.as_view(), name="order-detail"),
+    path("api/v1/orders/<uuid:pk>/cancel/", OrderCancelView.as_view(), name="order-cancel"),
+    path("api/v1/holdings/", HoldingsView.as_view(), name="holdings"),
     path("api/v1/", include(router.urls)),
 ]
