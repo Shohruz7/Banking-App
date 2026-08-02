@@ -25,20 +25,26 @@ from django.db.models.functions import Coalesce
 from accounts.models import Account
 from audit.models import AuditAction
 from audit.services import record_audit
-from common.money import quantize_money
+from common.money import quantize_money, quantize_shares
 
 from .exceptions import InsufficientFundsError, InvalidEntryError, UnbalancedEntryError
 from .models import JournalEntry, JournalLine
 
 _ZERO = Decimal("0.0000")
+_ZERO_SHARES = Decimal("0E-8")
 
 
 @dataclass(frozen=True)
 class LineSpec:
-    """One requested leg of an entry. ``amount`` is signed and gets quantized by the service."""
+    """One requested leg of an entry. ``amount`` is signed and gets quantized by the service.
+
+    ``quantity`` is the share count for a line touching a position account, signed the same way as
+    ``amount`` — required there, and forbidden anywhere else (ADR-0016).
+    """
 
     account: Account
     amount: Decimal
+    quantity: Decimal | None = None
 
 
 def post_entry(
@@ -54,6 +60,10 @@ def post_entry(
     USD (ADR-0007); and the signed amounts summing to exactly zero. On success the entry and its
     lines are created inside one transaction so the deferred balance trigger checks a complete
     entry at COMMIT.
+
+    Lines touching a position account must carry a ``quantity`` and lines touching a cash account
+    must not (ADR-0016) — checked here, because a position account whose share count and cost basis
+    disagree is exactly the drift this design exists to prevent.
 
     ``idempotency_key`` is stored as-is and is unique when present (ADR-0010); a duplicate raises
     ``IntegrityError`` from the database. Callers that want replay semantics should use
@@ -74,6 +84,24 @@ def post_entry(
                 f"Account {line.account.id} is {line.account.currency}; only USD is supported."
             )
 
+    quantities = [
+        None if line.quantity is None else quantize_shares(line.quantity) for line in lines
+    ]
+
+    for line, quantity in zip(lines, quantities, strict=True):
+        if line.account.is_position and quantity is None:
+            raise InvalidEntryError(
+                f"Account {line.account.id} holds {line.account.instrument_id}; "
+                f"a line touching it must carry a share quantity."
+            )
+        if not line.account.is_position and quantity is not None:
+            raise InvalidEntryError(
+                f"Account {line.account.id} is a cash account; a line touching it cannot carry a "
+                f"share quantity."
+            )
+        if quantity == _ZERO_SHARES:
+            raise InvalidEntryError("Journal lines must have a non-zero share quantity.")
+
     total = sum(amounts, start=Decimal("0"))
     if total != _ZERO:
         raise UnbalancedEntryError(f"Entry lines must sum to zero; got {total}.")
@@ -84,8 +112,14 @@ def post_entry(
         )
         JournalLine.objects.bulk_create(
             [
-                JournalLine(entry=entry, account=line.account, amount=amount, currency="USD")
-                for line, amount in zip(lines, amounts, strict=True)
+                JournalLine(
+                    entry=entry,
+                    account=line.account,
+                    amount=amount,
+                    quantity=quantity,
+                    currency="USD",
+                )
+                for line, amount, quantity in zip(lines, amounts, quantities, strict=True)
             ]
         )
     return entry
@@ -132,7 +166,7 @@ def transfer(
 
     try:
         with transaction.atomic():
-            _lock_accounts(source, destination)
+            lock_accounts(source, destination)
 
             # Re-check under the lock: a concurrent first attempt may have committed since above.
             if idempotency_key is not None:
@@ -196,15 +230,20 @@ def _audit_replay(entry: JournalEntry, actor: User | None, idempotency_key: str 
     )
 
 
-def _lock_accounts(source: Account, destination: Account) -> None:
-    """Take row locks on both accounts in ascending UUID order (ADR-0010).
+def lock_accounts(*accounts: Account) -> None:
+    """Take row locks on every given account in ascending UUID order (ADR-0010, ADR-0016).
 
     A fixed global acquisition order is what makes deadlock structurally impossible: A→B and B→A
     running at once request the same two locks in the same sequence, so one waits instead of both
     holding half of what the other needs. Locks are taken with sequential ``get()`` calls because
     a single ``filter(pk__in=...)`` would lock rows in plan order, which this code cannot pin.
+
+    The ordering is only worth anything if it is *global*, so this is public and every writer that
+    needs the no-overdraft or no-short-sell guarantee calls it — transfers touch two accounts, a
+    trade fill touches two or three. Duplicates are collapsed: locking the same row twice in one
+    transaction is harmless but pointless, and a caller shouldn't have to think about it.
     """
-    for pk in sorted((source.pk, destination.pk)):
+    for pk in sorted({account.pk for account in accounts}):
         Account.objects.select_for_update().get(pk=pk)
 
 
@@ -224,3 +263,19 @@ def get_balance(account: Account) -> Decimal:
         )
     )
     return result["balance"]
+
+
+def get_quantity(account: Account) -> Decimal:
+    """Return a position account's share count as the sum of its line quantities (ADR-0016).
+
+    Derived for the same reason balances are: a stored share count is a second source of truth that
+    can drift from the postings that produced it. A cash account reads ``0E-8`` — its lines all
+    carry a NULL quantity, and SUM ignores NULLs.
+    """
+    result = account.lines.aggregate(
+        quantity=Coalesce(
+            Sum("quantity"),
+            Value(_ZERO_SHARES, output_field=DecimalField(max_digits=20, decimal_places=8)),
+        )
+    )
+    return result["quantity"]

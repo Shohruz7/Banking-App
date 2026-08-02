@@ -24,3 +24,14 @@ def quantize_money(value: Decimal) -> Decimal:
     ``Decimal`` snapped to ``NUMERIC(20,4)`` with ``ROUND_HALF_EVEN``.
     """
     return value.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_EVEN)
+
+
+def quantize_shares(value: Decimal) -> Decimal:
+    """Round ``value`` to the share quantum using banker's rounding (ADR-0009, ADR-0016).
+
+    The same one-place-to-round rule as :func:`quantize_money`, at ``NUMERIC(20,8)``. Share
+    quantities need the extra four places because a dollar of an expensive instrument is a very
+    small fraction of a share, and rounding that to a cent's worth of precision would let a client
+    buy a quantity the ledger cannot represent.
+    """
+    return value.quantize(SHARE_QUANTUM, rounding=ROUND_HALF_EVEN)

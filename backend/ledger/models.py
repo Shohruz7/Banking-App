@@ -43,6 +43,11 @@ class JournalLine(models.Model):
         related_name="lines",
     )
     amount = models.DecimalField(max_digits=20, decimal_places=4)
+    # Set only on a line touching a position account: how many shares moved, signed the same way as
+    # ``amount`` (ADR-0016). The zero-sum invariant is about ``amount`` alone and is unaffected —
+    # this column rides alongside it so a holding's share count and its cost basis are written in
+    # the same row, and can never disagree about what a fill did.
+    quantity = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
     currency = models.CharField(max_length=3, default="USD")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -51,6 +56,11 @@ class JournalLine(models.Model):
             models.CheckConstraint(
                 condition=~models.Q(amount=0),
                 name="journal_line_amount_nonzero",
+            ),
+            # Mirrors the amount rule: absent is meaningful, zero is not.
+            models.CheckConstraint(
+                condition=models.Q(quantity__isnull=True) | ~models.Q(quantity=0),
+                name="journal_line_quantity_nonzero",
             ),
         ]
         indexes = [

@@ -15,9 +15,15 @@ from .serializers import AccountSerializer
 
 
 class AccountViewSet(ReadOnlyModelViewSet[Account]):
-    """List and retrieve the requesting user's accounts, each with its derived balance."""
+    """List and retrieve the requesting user's money accounts, each with its derived balance.
+
+    Position accounts are deliberately excluded (ADR-0016). Their balance is a *cost basis* in USD,
+    not spendable cash, and listing the two side by side under one ``balance`` field would invite
+    exactly that misreading — by a client, and by whoever writes the next feature. Holdings have
+    their own endpoint, where the share count is shown alongside the basis that explains it.
+    """
 
     serializer_class = AccountSerializer
 
     def get_queryset(self) -> QuerySet[Account]:
-        return Account.objects.filter(owner=request_user(self.request)).with_balance()
+        return Account.objects.filter(owner=request_user(self.request)).cash().with_balance()
