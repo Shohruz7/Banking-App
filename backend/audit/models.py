@@ -33,6 +33,11 @@ class AuditAction(models.TextChoices):
     TRANSFER_POSTED = "ledger.transfer_posted", "Transfer posted"
     TRANSFER_REPLAYED = "ledger.transfer_replayed", "Transfer replayed (idempotent)"
     TRANSFER_REJECTED = "ledger.transfer_rejected", "Transfer rejected"
+    ORDER_PLACED = "trading.order_placed", "Order placed"
+    ORDER_RESTED = "trading.order_rested", "Limit order resting"
+    ORDER_FILLED = "trading.order_filled", "Order filled"
+    ORDER_REJECTED = "trading.order_rejected", "Order rejected"
+    ORDER_CANCELLED = "trading.order_cancelled", "Order cancelled"
 
 
 class AuditEvent(models.Model):
