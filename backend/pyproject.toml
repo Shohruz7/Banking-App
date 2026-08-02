@@ -15,6 +15,8 @@ dependencies = [
     # Cache backend for DRF throttle state (ADR-0015); also the Week 5 Celery broker and the
     # Week 6 Channels layer. prod.py cannot boot without a shared cache, so it lands now.
     "redis>=5.0",
+    # Scheduled price ticks and limit-order matching (ADR-0019). Beat ships in the same package.
+    "celery>=5.4",
 ]
 
 [dependency-groups]
@@ -67,8 +69,8 @@ module = ["*.migrations.*"]
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-# django-environ and qrcode ship no type stubs
-module = ["environ.*", "qrcode.*"]
+# django-environ, qrcode and celery ship no type stubs
+module = ["environ.*", "qrcode.*", "celery.*"]
 ignore_missing_imports = true
 
 [tool.django-stubs]

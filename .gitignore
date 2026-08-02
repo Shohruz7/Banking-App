@@ -21,6 +21,10 @@ htmlcov/
 staticfiles/
 media/
 
+# Celery Beat's local schedule state — regenerated on every start (ADR-0019)
+celerybeat-schedule*
+celerybeat.pid
+
 # Environment / secrets — never commit
 .env
 .env.*
