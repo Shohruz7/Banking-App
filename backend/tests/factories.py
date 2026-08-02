@@ -18,6 +18,8 @@ from accounts.models import Account, AccountType
 from identity.models import AuthSession, MfaDevice
 from ledger.models import JournalEntry
 from ledger.services import LineSpec, post_entry
+from markets.models import Instrument, PriceTick
+from trading.models import Order, OrderSide, OrderType
 
 #: The password every factory-built user has. Week 4 gave UserFactory a real (hashed) password:
 #: before that no factory user could ever authenticate, which is why nothing exercised the login
@@ -66,6 +68,91 @@ class AuthSessionFactory(factory.django.DjangoModelFactory[AuthSession]):
 
     user = factory.SubFactory(UserFactory)
     ip = "127.0.0.1"
+
+
+class InstrumentFactory(factory.django.DjangoModelFactory[Instrument]):
+    """A tradeable symbol. Priced at $100 flat by default so arithmetic in tests stays legible."""
+
+    class Meta:
+        model = Instrument
+        django_get_or_create = ("symbol",)
+
+    symbol = factory.Sequence(lambda n: f"TST{n}")
+    name = factory.LazyAttribute(lambda o: f"{o.symbol} Test Corp.")
+    sector = "Technology"
+    initial_price = Decimal("100.0000")
+    drift = Decimal("0.0800")
+    volatility = Decimal("0.2500")
+
+
+class PriceTickFactory(factory.django.DjangoModelFactory[PriceTick]):
+    class Meta:
+        model = PriceTick
+
+    instrument = factory.SubFactory(InstrumentFactory)
+    price = Decimal("100.0000")
+
+
+class OrderFactory(factory.django.DjangoModelFactory[Order]):
+    """A resting limit buy. Traits flip it to a market order or the sell side."""
+
+    class Meta:
+        model = Order
+
+    user = factory.SubFactory(UserFactory)
+    instrument = factory.SubFactory(InstrumentFactory)
+    cash_account = factory.SubFactory(AccountFactory)
+    side = OrderSide.BUY
+    order_type = OrderType.LIMIT
+    quantity = Decimal("1.00000000")
+    limit_price = Decimal("100.0000")
+
+    class Params:
+        market = factory.Trait(order_type=OrderType.MARKET, limit_price=None)
+        sell = factory.Trait(side=OrderSide.SELL)
+
+
+def position_account(owner: User, instrument: Instrument) -> Account:
+    """The owner's position account for an instrument, created if absent.
+
+    Mirrors ``trading.services.position_account_for`` rather than calling it, so a test that
+    arranges a holding does not depend on the service under test to do the arranging.
+    """
+    account, _ = Account.objects.get_or_create(
+        owner=owner,
+        instrument=instrument,
+        defaults={
+            "name": f"{instrument.symbol} position",
+            "account_type": AccountType.ASSET,
+        },
+    )
+    return account
+
+
+def give_shares(
+    owner: User,
+    instrument: Instrument,
+    quantity: Decimal,
+    cost: Decimal,
+) -> JournalEntry:
+    """Put a holding on the books at a known cost basis, without going through the order path.
+
+    Posted against an equity account for the same reason :func:`fund_account` is: the entry has to
+    balance, and money has to come from somewhere that is not the code under test.
+    """
+    position = position_account(owner, instrument)
+    opening = AccountFactory.create(
+        owner=owner,
+        name="Opening balances",
+        account_type=AccountType.EQUITY,
+    )
+    return post_entry(
+        description="opening position",
+        lines=[
+            LineSpec(account=opening, amount=-cost),
+            LineSpec(account=position, amount=cost, quantity=quantity),
+        ],
+    )
 
 
 def post_balanced_entry(

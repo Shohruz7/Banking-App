@@ -7,6 +7,7 @@ so the whole auth stack could have been broken and every test would still have p
 """
 
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 import pyotp
@@ -16,9 +17,18 @@ from django.core.cache import cache
 from django.urls import reverse
 from rest_framework.test import APIClient
 
+from accounts.models import Account
 from identity.models import MfaDevice
+from markets.models import Instrument
 
-from .factories import TEST_PASSWORD, MfaDeviceFactory, UserFactory
+from .factories import (
+    TEST_PASSWORD,
+    AccountFactory,
+    InstrumentFactory,
+    MfaDeviceFactory,
+    UserFactory,
+    fund_account,
+)
 
 
 @pytest.fixture
@@ -95,3 +105,17 @@ def auth_client(token_pair: dict[str, str]) -> APIClient:
 def totp_now(secret: str) -> str:
     """The code an authenticator app would show right now."""
     return pyotp.TOTP(secret).now()
+
+
+@pytest.fixture
+def instrument() -> Instrument:
+    """A tradeable symbol sitting at exactly $100, with no tick history."""
+    return InstrumentFactory.create(symbol="TEST", name="Test Corp.")
+
+
+@pytest.fixture
+def funded_cash_account(password_user: User) -> Account:
+    """``password_user``'s cash account, holding $10,000 — enough to trade with."""
+    account = AccountFactory.create(owner=password_user, name="Brokerage cash")
+    fund_account(account, Decimal("10000.00"))
+    return account
