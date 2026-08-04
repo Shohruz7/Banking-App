@@ -40,6 +40,24 @@ about a holding is stored — its share count and its cost basis are both sums o
 they cannot drift from the postings that produced them. You cannot buy with money you don't have or
 sell shares you don't own, by the same lock-then-read mechanism as the overdraft check.
 
+**Portfolio and P&L.** Cash, market value, cost basis, unrealized and realized P&L, all derived at
+read time from rows that already exist — the endpoint adds no table and no migration. Realized P&L
+is literally the balance of an income account, so it cannot disagree with the sells that produced
+it. Nothing is stored, so nothing can drift.
+
+**Statements.** On the 1st of each month Celery Beat renders a PDF per cash account plus a brokerage
+statement per user, and stores them through Django's storage API. Running it twice produces one
+statement, because two partial unique indexes say so rather than a check that could be raced. The
+generated file is reachable only through an owner-scoped download endpoint — `MEDIA_URL` is not
+routed at all.
+
+**Real-time.** A WebSocket pushes fills, balance changes, transfers and price ticks as they commit.
+A browser cannot set an `Authorization` header on a handshake, so the socket authenticates in its
+first frame rather than through a token in the URL, and it dies three ways: the auth deadline
+passes, the access token expires, or the session behind it is revoked. **Every event is published on
+`transaction.commit`**, so a posting that rolls back is never announced — a rejected order reaches
+the client as a rejection and produces no balance update at all.
+
 **Audit.** Every auth event and every money movement lands in an append-only log that Postgres
 itself refuses to let anyone `UPDATE` or `DELETE`. Ledger audit rows are written inside the same
 transaction as the posting, so the log and the ledger commit or vanish together. Rows written from
@@ -56,7 +74,9 @@ refresh, transfers and orders each have their own ceiling.
 | Backend | Python 3.12 · Django 5.2 · Django REST Framework · SimpleJWT |
 | Data    | PostgreSQL 16 · Redis 7                                      |
 | Auth    | JWT with rotating refresh · TOTP MFA (pyotp)                 |
-| Async   | Celery + Beat (scheduled price ticks, limit-order matching)  |
+| Async   | Celery + Beat (price ticks, limit-order matching, statements) |
+| Realtime| Django Channels over a Redis channel layer (daphne/ASGI)     |
+| Reports | ReportLab PDF statements behind Django's storage API         |
 | Tooling | uv (env + lockfile) · ruff (lint + format) · mypy · pytest   |
 
 ## Quickstart
@@ -83,8 +103,16 @@ uv run celery -A config worker -l info
 uv run celery -A config beat -l info
 ```
 
-Beat advances every instrument once a minute (`MARKET_TICK_SECONDS`) and sweeps resting limit
-orders after each tick. Without them the API still works; prices simply stand still.
+Beat advances every instrument once a minute (`MARKET_TICK_SECONDS`), sweeps resting limit orders
+after each tick, and generates statements on the 1st. Without them the API still works; prices
+simply stand still.
+
+`runserver` serves ASGI (daphne is first in `INSTALLED_APPS`), so the WebSocket is live on the same
+port. Statements for any past month can be generated on demand:
+
+```sh
+uv run python manage.py generate_statements --period 2026-07
+```
 
 ## API
 
@@ -112,6 +140,20 @@ explicitly.
 | GET | `/orders/`, `/orders/{id}/` | Own orders and their outcomes |
 | POST | `/orders/{id}/cancel/` | Withdraw a resting order — 409 if it already resolved |
 | GET | `/holdings/` | Positions: quantity, cost basis, average cost, market value |
+| GET | `/portfolio/` | Cash, holdings value, cost basis, unrealized and realized P&L |
+| GET | `/statements/` | Generated monthly statements, newest first |
+| GET | `/statements/{id}/download/` | Stream the PDF — the only path to a generated file |
+
+One WebSocket endpoint, `ws/v1/stream/`:
+
+```js
+socket.send(JSON.stringify({ type: "auth", token: accessToken }));       // → auth.ok
+socket.send(JSON.stringify({ type: "subscribe", symbols: ["AAPL"] }));   // → price.tick
+// → order.filled · order.rejected · order.cancelled · balance.updated · transfer.posted
+```
+
+The socket closes `4401` if it never authenticates or its token expires, `4403` when its session is
+revoked, and `4429` past the subscription ceiling.
 
 Errors share one envelope: `{"error": {"code": ..., "message": ..., "details": {...}}}`.
 An account owned by someone else returns 404, never 403 — a 403 would confirm it exists.
@@ -130,9 +172,14 @@ each other, that a retried transfer or fill posts once, that a replayed refresh 
 whole family, that a forged token is rejected, and that closing a position leaves no cost-basis dust
 behind.
 
-The concurrency, security and rounding tests were each checked against a deliberately broken
-implementation first, to confirm they actually fail when the property they claim to protect is
-removed. One test was rewritten after that check showed it passed against the broken version too.
+It also proves the things a live system gets wrong quietly: that a rolled-back posting is never
+announced on the socket, that a revoked session closes the connection it authenticated, and that
+regenerating a month produces one statement rather than two.
+
+The concurrency, security, rounding and event-delivery tests were each checked against a
+deliberately broken implementation first, to confirm they actually fail when the property they claim
+to protect is removed. Two tests were rewritten after that check showed they passed against the
+broken version too.
 
 ```sh
 cd backend
@@ -153,7 +200,9 @@ backend/
   identity/   registration, TOTP MFA, revocable auth sessions
   audit/      the append-only audit log
   markets/    instruments, price ticks, the GBM price engine, the tick task
-  trading/    orders, the fill service, the limit-order matching sweep
+  trading/    orders, the fill service, the matching sweep, portfolio valuation
+  statements/ monthly statement data, the PDF renderer, the Beat task
+  realtime/   the WebSocket consumer, socket auth, and the event publishers
   common/     money, pagination, error envelope, shared helpers
   tests/
 frontend/     web client (not yet implemented)
@@ -181,5 +230,12 @@ explicitly. The ones that shape the system most:
   quantities sitting outside the zero-sum invariant.
 - **Synthetic prices behind a source interface** over a live market-data feed, so the simulation is
   one class deep and a real feed is one settings string away.
+- **Portfolio valuation derived on read** over stored positions and a P&L column, refusing a second
+  source of truth for facts the ledger already holds.
+- **Real-time events published on commit** over publishing at the call site — the mirror image of
+  the audit log's rule, and for the same reason: neither may claim a movement that never happened.
+- **First-message WebSocket authentication** over a token in the query string, so a bearer
+  credential is never written to an access log — with the socket's lifetime bounded by its token's
+  expiry and by its session's revocation.
 - **UUIDv7 primary keys**, **single-currency USD** with the currency field already in place, and a
   **versioned API** with one error envelope and cursor pagination.
