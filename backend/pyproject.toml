@@ -17,6 +17,15 @@ dependencies = [
     "redis>=5.0",
     # Scheduled price ticks and limit-order matching (ADR-0019). Beat ships in the same package.
     "celery>=5.4",
+    # WebSocket transport (ADR-0022). The daphne extra makes `runserver` serve ASGI in dev, so the
+    # socket and the API are reachable on one port without a second process.
+    "channels[daphne]>=4.2",
+    # The cross-process channel layer: a fill posted in a web worker has to reach a socket held by
+    # a different process, and a price tick is published from a Celery worker entirely.
+    "channels-redis>=4.2",
+    # Monthly statement PDFs (ADR-0021). Pure Python, no system libraries — which is why it is
+    # ReportLab and not a wkhtmltopdf/WeasyPrint pipeline that Week 8's image would have to carry.
+    "reportlab>=4.2",
 ]
 
 [dependency-groups]
@@ -26,6 +35,11 @@ dev = [
     "pytest-cov>=6.0",
     "factory-boy>=3.3",
     "freezegun>=1.5",
+    # Channels' WebsocketCommunicator drives an async consumer, so the suite needs an async runner.
+    "pytest-asyncio>=0.24",
+    # Extracts text from a rendered statement, so one test can assert the numbers actually landed
+    # on the page rather than that some bytes were produced.
+    "pypdf>=5.0",
     "ruff>=0.11",
     "mypy>=1.15",
     "django-stubs[compatible-mypy]>=5.2",
@@ -69,8 +83,16 @@ module = ["*.migrations.*"]
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-# django-environ, qrcode and celery ship no type stubs
-module = ["environ.*", "qrcode.*", "celery.*"]
+# django-environ, qrcode, celery, channels and reportlab ship no usable type stubs
+module = [
+    "environ.*",
+    "qrcode.*",
+    "celery.*",
+    "channels.*",
+    "channels_redis.*",
+    "reportlab.*",
+    "pypdf.*",
+]
 ignore_missing_imports = true
 
 [tool.django-stubs]
@@ -80,6 +102,10 @@ django_settings_module = "config.settings.dev"
 DJANGO_SETTINGS_MODULE = "config.settings.test"
 testpaths = ["tests"]
 addopts = "-q"
+# WebSocket tests drive an async consumer through Channels' communicator; every other test in the
+# suite stays synchronous, so async tests are opted in with a marker rather than auto-detected.
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["."]
