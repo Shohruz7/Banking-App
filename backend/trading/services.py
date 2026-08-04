@@ -39,6 +39,7 @@ from common.money import quantize_money, quantize_shares
 from ledger.exceptions import InsufficientFundsError
 from ledger.services import LineSpec, get_balance, get_quantity, lock_accounts, post_entry
 from markets.models import Instrument
+from realtime import events
 
 from .exceptions import (
     InstrumentInactiveError,
@@ -246,6 +247,26 @@ def execute_fill(order: Order, price: Decimal) -> Order:
             },
         )
 
+        # Inside the transaction, delivered after it commits (ADR-0023). The whole point of a live
+        # fill notification is that it is true — an order that rolls back must not produce one, and
+        # the cash balance read here is the one the entry above just created.
+        events.publish_order(
+            order.user_id,
+            "order.filled",
+            {
+                "order_id": str(order.pk),
+                "symbol": order.instrument.symbol,
+                "side": order.side,
+                "quantity": quantity,
+                "price": price,
+                "notional": notional,
+                "entry_id": str(entry.pk),
+            },
+        )
+        events.publish_balance(
+            order.user_id, order.cash_account_id, get_balance(order.cash_account)
+        )
+
     return order
 
 
@@ -329,6 +350,11 @@ def cancel_order(order: Order, *, actor: User) -> Order:
         target_id=str(order.pk),
         context={"symbol": order.instrument.symbol, "side": order.side},
     )
+    events.publish_order(
+        order.user_id,
+        "order.cancelled",
+        {"order_id": str(order.pk), "symbol": order.instrument.symbol, "side": order.side},
+    )
     return order
 
 
@@ -349,6 +375,20 @@ def reject_order(order: Order, *, reason: str) -> Order:
         target_type="order",
         target_id=str(order.pk),
         context={
+            "symbol": order.instrument.symbol,
+            "side": order.side,
+            "quantity": order.quantity,
+            "reason": reason,
+        },
+    )
+    # No balance event rides along, and that is the assertion the rollback test makes: nothing
+    # moved, so there is no new balance to announce. Outside any transaction, ``on_commit`` fires
+    # this immediately — which is why a rejection reaches the client at all.
+    events.publish_order(
+        order.user_id,
+        "order.rejected",
+        {
+            "order_id": str(order.pk),
             "symbol": order.instrument.symbol,
             "side": order.side,
             "quantity": order.quantity,

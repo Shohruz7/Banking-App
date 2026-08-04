@@ -26,6 +26,7 @@ from accounts.models import Account
 from audit.models import AuditAction
 from audit.services import record_audit
 from common.money import quantize_money, quantize_shares
+from realtime import events
 
 from .exceptions import InsufficientFundsError, InvalidEntryError, UnbalancedEntryError
 from .models import JournalEntry, JournalLine
@@ -201,6 +202,7 @@ def transfer(
                     "idempotency_key": idempotency_key,
                 },
             )
+            _announce_transfer(entry, source, destination, amount, description)
         return entry, True
     except IntegrityError:
         # Two first attempts with the same key raced past the checks above and the unique
@@ -213,6 +215,29 @@ def transfer(
             raise
         _audit_replay(replayed, actor, idempotency_key)
         return replayed, False
+
+
+def _announce_transfer(
+    entry: JournalEntry,
+    source: Account,
+    destination: Account,
+    amount: Decimal,
+    description: str,
+) -> None:
+    """Push the posting and both new balances to whoever is watching (ADR-0023).
+
+    Called from inside the transaction, which is exactly right: ``realtime.events`` defers every
+    send to ``on_commit``, so a transfer that ends up rolling back — an overdraft caught under the
+    lock, a deadlock, a crash between here and COMMIT — announces nothing. The balances are read
+    here rather than in the callback because *here* is where they are consistent.
+
+    Both sides are told. A transfer to another user is that user's money arriving, and they are
+    entitled to see it land without refreshing.
+    """
+    for account in (source, destination):
+        events.publish_balance(account.owner_id, account.pk, get_balance(account))
+    for owner_id in {source.owner_id, destination.owner_id}:
+        events.publish_transfer(owner_id, entry_id=entry.pk, amount=amount, description=description)
 
 
 def _audit_replay(entry: JournalEntry, actor: User | None, idempotency_key: str | None) -> None:

@@ -33,6 +33,7 @@ from rest_framework_simplejwt.tokens import UntypedToken
 
 from audit.models import AuditAction
 from audit.services import record_audit
+from realtime import events
 
 from .models import AuthSession, MfaDevice, RevokeReason
 
@@ -94,6 +95,10 @@ def revoke_session(sid: str, *, reason: RevokeReason) -> AuthSession | None:
         target_id=str(session.id),
         context={"reason": str(reason)},
     )
+    # A live WebSocket authenticated on this session is a credential too, and blacklisting refresh
+    # tokens does nothing to it. Closing it is what makes ADR-0013's promise — "revoking the row
+    # kills every token in the family" — true for the socket as well (ADR-0022).
+    events.publish_session_revoked(str(session.id))
     return session
 
 

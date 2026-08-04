@@ -5,6 +5,7 @@
 """
 
 import logging
+from decimal import Decimal
 from typing import Any
 
 from celery import shared_task
@@ -12,6 +13,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
+
+from realtime import events
 
 from .models import Instrument, PriceTick
 from .pricing import PriceSource, get_price_source
@@ -45,6 +48,7 @@ def advance_prices(source: PriceSource | None = None) -> dict[str, Any]:
         price_source = source if source is not None else get_price_source()
         now = timezone.now()
         ticked = 0
+        moved: list[tuple[str, Decimal]] = []
 
         for instrument in Instrument.objects.filter(is_active=True):
             price = price_source.next_price(instrument)
@@ -53,9 +57,15 @@ def advance_prices(source: PriceSource | None = None) -> dict[str, Any]:
                 instrument.last_price = price
                 instrument.last_tick_at = now
                 instrument.save(update_fields=["last_price", "last_tick_at"])
+            moved.append((instrument.symbol, price))
             ticked += 1
     finally:
         cache.delete(_ADVANCE_LOCK_KEY)
+
+    # Published once for the whole sweep rather than inside each instrument's transaction: a tick
+    # is only interesting to a client that subscribed to that symbol, and a group nobody joined
+    # costs a round trip and nothing more (ADR-0023).
+    events.publish_prices(moved)
 
     if ticked:
         # Imported here, not at module scope: trading imports markets (for Instrument), so a

@@ -10,6 +10,7 @@ while asserting nothing.
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
+from unittest import mock
 
 import pytest
 from django.contrib.auth.models import User
@@ -90,11 +91,19 @@ def test_advance_prices_releases_its_lock(instrument: Instrument) -> None:
 def test_advance_prices_chains_the_matching_sweep(
     django_capture_on_commit_callbacks: Callable[..., Any], instrument: Instrument
 ) -> None:
-    """The tick task dispatches matching through on_commit, so no worker reads an unlanded tick."""
-    with django_capture_on_commit_callbacks(execute=True) as callbacks:
+    """The tick task dispatches matching through on_commit, so no worker reads an unlanded tick.
+
+    Asserted by patching the sweep rather than by counting callbacks: Week 6 added a second
+    ``on_commit`` here (the price broadcast, ADR-0023), and a test that counts is a test that
+    breaks every time something else correct is deferred to commit.
+    """
+    with (
+        mock.patch("trading.tasks.match_resting_orders.delay") as sweep,
+        django_capture_on_commit_callbacks(execute=True),
+    ):
         advance_prices(source=FixedPriceSource(Decimal("100")))
 
-    assert len(callbacks) == 1, "advance_prices did not dispatch the matching sweep"
+    sweep.assert_called_once_with()
 
 
 def test_a_fill_from_a_celery_task_still_writes_an_audit_row(
