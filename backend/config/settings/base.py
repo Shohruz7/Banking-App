@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -18,6 +19,9 @@ environ.Env.read_env(BASE_DIR / ".env")
 ALLOWED_HOSTS: list[str] = []
 
 INSTALLED_APPS = [
+    # First, and it has to be first: daphne's app config replaces runserver's WSGI handler with an
+    # ASGI one, so the WebSocket endpoint is reachable in dev without a second process (ADR-0022).
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -30,6 +34,7 @@ INSTALLED_APPS = [
     # Must be installed unconditionally: BlacklistMixin's methods are gated on INSTALLED_APPS at
     # class-definition time, so a conditional install makes refresh.blacklist() a silent no-op.
     "rest_framework_simplejwt.token_blacklist",
+    "channels",
     # First-party
     "accounts",
     "ledger",
@@ -37,6 +42,8 @@ INSTALLED_APPS = [
     "audit",
     "markets",
     "trading",
+    "statements",
+    "realtime",
 ]
 
 MIDDLEWARE = [
@@ -77,6 +84,24 @@ DATABASES = {
 
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 
+# The channel layer (ADR-0022). It must be shared: a fill commits in a web worker and has to reach
+# a socket held by a different process, and a price tick is published from Celery entirely — an
+# in-process layer would deliver each event only to whichever worker happened to produce it.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
+    }
+}
+
+# How long an accepted socket may stay anonymous before it is closed (ADR-0022). The client's only
+# legal first move is an auth frame; this is the budget for making it.
+WS_AUTH_DEADLINE_SECONDS = env.int("WS_AUTH_DEADLINE_SECONDS", default=5)
+
+# Per-socket price-subscription ceiling. A client watching a whole 55-symbol market is a chart
+# nobody is reading; the throttles (ADR-0015) cover HTTP, and this is the socket's equivalent.
+WS_MAX_SUBSCRIPTIONS = env.int("WS_MAX_SUBSCRIPTIONS", default=25)
+
 # Celery (ADR-0019). Redis is the broker; there is no result backend because nothing waits on a
 # return value — Beat fires tasks, tasks write rows, and the database is the result.
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL)
@@ -109,6 +134,13 @@ CELERY_BEAT_SCHEDULE = {
         "task": "trading.match_resting_orders",
         "schedule": MARKET_TICK_SECONDS * 5,
     },
+    # Statements for the month that just closed (ADR-0021). A quarter past midnight rather than on
+    # the hour: nothing else is scheduled there, and a late tick from the previous month has long
+    # since landed. The task is idempotent, so a retry after an outage costs nothing.
+    "generate-monthly-statements": {
+        "task": "statements.generate_monthly",
+        "schedule": crontab(day_of_month="1", hour=0, minute=15),
+    },
 }
 
 # DRF keeps throttle history here (ADR-0015). The default LocMemCache is per-process, so behind
@@ -136,6 +168,16 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+
+# Generated statement PDFs (ADR-0021). Written through Django's storage API so Week 8 repoints
+# `default` at S3 without touching a line of statement code.
+MEDIA_ROOT = env("MEDIA_ROOT", default=str(BASE_DIR / "media"))
+# Deliberately no MEDIA_URL route. The only path to a statement is the owner-scoped download view;
+# a file served off a guessable static path would bypass every ownership check in the system.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

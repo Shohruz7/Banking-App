@@ -25,7 +25,14 @@ from identity.views import (
 )
 from ledger.views import AccountTransactionsView, TransferView
 from markets.views import InstrumentPricesView, InstrumentViewSet
-from trading.views import HoldingsView, OrderCancelView, OrderDetailView, OrderListCreateView
+from statements.views import StatementDownloadView, StatementListView
+from trading.views import (
+    HoldingsView,
+    OrderCancelView,
+    OrderDetailView,
+    OrderListCreateView,
+    PortfolioView,
+)
 
 router = DefaultRouter()
 router.register("accounts", AccountViewSet, basename="account")
@@ -63,5 +70,13 @@ urlpatterns = [
     path("api/v1/orders/<uuid:pk>/", OrderDetailView.as_view(), name="order-detail"),
     path("api/v1/orders/<uuid:pk>/cancel/", OrderCancelView.as_view(), name="order-cancel"),
     path("api/v1/holdings/", HoldingsView.as_view(), name="holdings"),
+    # Reporting (Week 6): what everything is worth now, and what a closed month looked like.
+    path("api/v1/portfolio/", PortfolioView.as_view(), name="portfolio"),
+    path("api/v1/statements/", StatementListView.as_view(), name="statement-list"),
+    path(
+        "api/v1/statements/<uuid:pk>/download/",
+        StatementDownloadView.as_view(),
+        name="statement-download",
+    ),
     path("api/v1/", include(router.urls)),
 ]
