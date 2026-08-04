@@ -5,12 +5,18 @@ Balances are never stored here; they are derived as the sum of the account's jou
 drive debit/credit sign conventions — the v1 ledger is simplified-signed (ADR-0008).
 """
 
+from datetime import datetime
 from decimal import Decimal
 
 import uuid6
 from django.conf import settings
 from django.db import models
 from django.db.models.functions import Coalesce
+
+
+def _before(as_of: datetime | None) -> models.Q | None:
+    """The aggregate filter for an as-of sum, or None for "everything posted so far"."""
+    return None if as_of is None else models.Q(lines__created_at__lt=as_of)
 
 
 class AccountType(models.TextChoices):
@@ -22,16 +28,21 @@ class AccountType(models.TextChoices):
 
 
 class AccountQuerySet(models.QuerySet["Account"]):
-    def with_balance(self) -> "AccountQuerySet":
+    def with_balance(self, *, as_of: datetime | None = None) -> "AccountQuerySet":
         """Annotate each row with its derived balance in the same query.
 
         One aggregate for the whole queryset instead of a ``get_balance()`` call per row — the
         difference between one query and N. Uses the ``lines`` reverse accessor by name so the
         accounts app stays free of ledger imports.
+
+        ``as_of`` restricts the sum to lines posted *before* that instant, which is what a statement
+        needs for an opening balance and for valuing a holding at a period boundary (ADR-0021).
+        The ledger is append-only and lines are never backdated, so the answer for a closed period
+        is stable no matter when it is asked.
         """
         return self.annotate(
             balance=Coalesce(
-                models.Sum("lines__amount"),
+                models.Sum("lines__amount", filter=_before(as_of)),
                 models.Value(
                     Decimal("0.0000"),
                     output_field=models.DecimalField(max_digits=20, decimal_places=4),
@@ -39,7 +50,7 @@ class AccountQuerySet(models.QuerySet["Account"]):
             )
         )
 
-    def with_quantity(self) -> "AccountQuerySet":
+    def with_quantity(self, *, as_of: datetime | None = None) -> "AccountQuerySet":
         """Annotate each row with its derived share quantity (ADR-0016).
 
         Safe to chain with :meth:`with_balance`: both aggregate over the *same* ``lines`` relation,
@@ -50,7 +61,7 @@ class AccountQuerySet(models.QuerySet["Account"]):
         """
         return self.annotate(
             quantity=Coalesce(
-                models.Sum("lines__quantity"),
+                models.Sum("lines__quantity", filter=_before(as_of)),
                 models.Value(
                     Decimal("0E-8"),
                     output_field=models.DecimalField(max_digits=20, decimal_places=8),

@@ -9,6 +9,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from .models import Order, OrderSide, OrderType
+from .portfolio import Holding, Portfolio
 
 
 class OrderSerializer(serializers.ModelSerializer[Order]):
@@ -87,18 +88,38 @@ class OrderCreateSerializer(serializers.Serializer[dict[str, object]]):
         return attrs
 
 
-class HoldingSerializer(serializers.Serializer[dict[str, object]]):
+class HoldingSerializer(serializers.Serializer[Holding]):
     """One position: how much is held, what it cost, and what it is worth now.
 
-    Every field is derived — quantity and cost basis are sums over the ledger, average cost and
-    market value are arithmetic on top (ADR-0016). Nothing here is stored, so nothing can drift.
+    Every field is derived — quantity and cost basis are sums over the ledger, average cost, market
+    value and unrealized P&L are arithmetic on top (ADR-0016, ADR-0020). Nothing here is stored, so
+    nothing can drift. Reads a :class:`~trading.portfolio.Holding`, whose ``instrument`` is already
+    ``select_related``, so ``symbol`` and ``name`` cost no extra query.
     """
 
-    symbol = serializers.CharField(read_only=True)
-    name = serializers.CharField(read_only=True)
+    symbol = serializers.CharField(source="instrument.symbol", read_only=True)
+    name = serializers.CharField(source="instrument.name", read_only=True)
     account_id = serializers.UUIDField(read_only=True)
     quantity = serializers.DecimalField(max_digits=20, decimal_places=8, read_only=True)
     cost_basis = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
     average_cost = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
     last_price = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
     market_value = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    unrealized_pnl = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+
+
+class PortfolioSerializer(serializers.Serializer[Portfolio]):
+    """Everything the user owns, valued (ADR-0020).
+
+    ``cash`` is asset cash accounts only; ``realized_pnl`` is reported in the sign a human expects,
+    which is the negation of the income account's ledger balance. Both decisions live in
+    :mod:`trading.portfolio` — this is the projection, not the arithmetic.
+    """
+
+    cash = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    holdings_value = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    cost_basis = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    unrealized_pnl = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    realized_pnl = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    total_value = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    positions = HoldingSerializer(many=True, read_only=True)

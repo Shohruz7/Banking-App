@@ -6,8 +6,7 @@ envelope. Every rule about trading lives in the service so it holds for the Cele
 never comes through HTTP.
 """
 
-from decimal import Decimal
-from typing import Any, cast
+from typing import Any
 
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -17,7 +16,6 @@ from rest_framework.views import APIView
 
 from accounts.models import Account
 from common.auth import request_user
-from common.money import quantize_money
 from ledger.api_exceptions import InsufficientFunds
 from ledger.exceptions import InsufficientFundsError
 from markets.models import Instrument
@@ -36,10 +34,14 @@ from .exceptions import (
     OrderNotOpenError,
 )
 from .models import Order
-from .serializers import HoldingSerializer, OrderCreateSerializer, OrderSerializer
+from .portfolio import holdings_for, portfolio_for
+from .serializers import (
+    HoldingSerializer,
+    OrderCreateSerializer,
+    OrderSerializer,
+    PortfolioSerializer,
+)
 from .services import cancel_order, place_order
-
-_ZERO_SHARES = Decimal("0E-8")
 
 
 class OrderListCreateView(APIView):
@@ -133,45 +135,26 @@ class OrderCancelView(APIView):
 class HoldingsView(APIView):
     """``GET /api/v1/holdings/`` — every instrument the requester holds.
 
-    Quantity and cost basis come from one annotated query over the position accounts, so N holdings
-    still cost one query rather than N. Positions that have been fully sold are omitted: an account
-    with zero shares and zero basis is history, not a holding.
+    All of the arithmetic lives in :func:`trading.portfolio.holdings_for`, which the portfolio
+    endpoint and the brokerage statement also call. Two implementations of "what is this position
+    worth" is exactly the drift ADR-0016 built derived holdings to avoid.
     """
 
     def get(self, request: Request) -> Response:
-        positions = (
-            Account.objects.filter(owner=request_user(request))
-            .positions()
-            .select_related("instrument")
-            .with_balance()
-            .with_quantity()
-        )
-
-        rows: list[dict[str, object]] = []
-        for account in positions:
-            quantity: Decimal = account.quantity  # type: ignore[attr-defined]
-            if quantity == _ZERO_SHARES:
-                continue
-
-            cost_basis: Decimal = account.balance  # type: ignore[attr-defined]
-            # Non-null by construction: .positions() filters instrument__isnull=False.
-            instrument = cast(Instrument, account.instrument)
-            last_price = instrument.current_price
-            rows.append(
-                {
-                    "symbol": instrument.symbol,
-                    "name": instrument.name,
-                    "account_id": account.pk,
-                    "quantity": quantity,
-                    "cost_basis": cost_basis,
-                    "average_cost": quantize_money(cost_basis / quantity),
-                    "last_price": last_price,
-                    "market_value": quantize_money(last_price * quantity),
-                }
-            )
-
+        holdings = holdings_for(request_user(request))
         # The DRF stubs type a plain Serializer's instance argument as the single-object type, so
         # they cannot express `many=True` (which returns a ListSerializer). The serializer is not
         # optional here: DRF's JSON encoder renders a bare Decimal as a float, and ADR-0009 says
         # money never crosses the wire as one.
-        return Response(HoldingSerializer(rows, many=True).data)  # type: ignore[arg-type]
+        return Response(HoldingSerializer(holdings, many=True).data)  # type: ignore[arg-type]
+
+
+class PortfolioView(APIView):
+    """``GET /api/v1/portfolio/`` — cash, holdings, and what the difference is worth (ADR-0020).
+
+    Every figure is derived from ledger rows at request time; the endpoint adds no state of its own
+    and its correctness is therefore a property of the postings, not of anything it stores.
+    """
+
+    def get(self, request: Request) -> Response:
+        return Response(PortfolioSerializer(portfolio_for(request_user(request))).data)
