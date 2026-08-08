@@ -10,6 +10,8 @@ from django.conf import settings
 from django.db import models
 from uuid6 import uuid7
 
+from common.crypto import decrypt, encrypt
+
 
 class RevokeReason(models.TextChoices):
     LOGOUT = "logout", "Logout"
@@ -81,7 +83,13 @@ class MfaDevice(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="mfa_devices"
     )
     name = models.CharField(max_length=50, default="Authenticator app")
-    secret = models.CharField(max_length=64)
+    # Envelope ciphertext, never the base32 secret itself (ADR-0027). Until Week 7 this column held
+    # the shared secret in plain text, which made a database dump a complete MFA bypass for every
+    # enrolled user — the one finding in the codebase that defeated an entire control rather than
+    # weakening it. Read and written through the `secret` property below, so no service call site
+    # knows the difference. Widened from 64 because a wrapped 32-byte data key, two nonces and the
+    # base32 body do not fit in the length of the plaintext.
+    secret_ciphertext = models.CharField(max_length=512)
     confirmed_at = models.DateTimeField(null=True, blank=True)
     # -1 rather than 0 so the very first timestep (counter 0, at the Unix epoch) is still burnable.
     last_used_counter = models.BigIntegerField(default=-1)
@@ -103,6 +111,21 @@ class MfaDevice(models.Model):
     def __str__(self) -> str:
         state = "confirmed" if self.confirmed_at else "unconfirmed"
         return f"{self.name} ({self.user_id}, {state})"
+
+    @property
+    def secret(self) -> str:
+        """The base32 TOTP secret, decrypted (ADR-0027).
+
+        A property rather than a custom model field: a field subclass would also decrypt during
+        ``values()``, ``bulk_create`` and admin list rendering, quietly widening the number of code
+        paths that hold plaintext. This way exactly one expression reads it, and ``verify_totp`` is
+        the only caller.
+        """
+        return decrypt(self.secret_ciphertext)
+
+    @secret.setter
+    def secret(self, value: str) -> None:
+        self.secret_ciphertext = encrypt(value)
 
     @property
     def is_confirmed(self) -> bool:

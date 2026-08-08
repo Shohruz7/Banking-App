@@ -48,9 +48,12 @@ class MfaDeviceAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "name", "confirmed_at", "last_used_at", "created_at")
     list_filter = ("confirmed_at", "created_at")
     search_fields = ("user__username", "name")
-    # `secret` is deliberately excluded from both lists: it is the second factor itself.
+    # The secret is deliberately excluded from both lists: it is the second factor itself. Since
+    # ADR-0027 the column holds envelope ciphertext rather than the base32 secret, so rendering it
+    # would leak less than it once did — but "the admin shows something an attacker wants" is not a
+    # bar worth lowering, and the KEK is one settings read away.
     readonly_fields = ("id", "user", "name", "confirmed_at", "last_used_at", "created_at")
-    exclude = ("secret", "last_used_counter")
+    exclude = ("secret_ciphertext", "last_used_counter")
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[MfaDevice]:
         return super().get_queryset(request).select_related("user")

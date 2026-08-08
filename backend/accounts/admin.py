@@ -29,4 +29,6 @@ class AccountAdmin(admin.ModelAdmin):
 
     @admin.display(description="Balance", ordering="balance")
     def balance(self, obj: Account) -> Decimal:
-        return obj.balance  # type: ignore[attr-defined]  # annotated by with_balance()
+        # `balance` is a queryset annotation, not a field, so the model has no such attribute as
+        # far as the type checker is concerned; the cast records both that and its real type.
+        return cast(Decimal, obj.balance)  # type: ignore[attr-defined]

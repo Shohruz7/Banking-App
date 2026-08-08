@@ -40,8 +40,8 @@ from .models import AuthSession, MfaDevice, RevokeReason
 # django-stubs cannot synthesise `.objects` for SimpleJWT's blacklist models — the package ships no
 # django-stubs-aware annotations — so the managers are bound once here rather than ignored at each
 # of the half-dozen call sites.
-_outstanding_tokens: models.Manager[OutstandingToken] = OutstandingToken.objects  # type: ignore[attr-defined]
-_blacklisted_tokens: models.Manager[BlacklistedToken] = BlacklistedToken.objects  # type: ignore[attr-defined]
+_outstanding_tokens: models.Manager[OutstandingToken] = OutstandingToken.objects
+_blacklisted_tokens: models.Manager[BlacklistedToken] = BlacklistedToken.objects
 
 TOTP_INTERVAL = 30
 #: One step either side of now (~90s of acceptance). Phone clocks drift; every production TOTP
@@ -196,7 +196,9 @@ def enroll_totp(user: User) -> MfaDevice:
     scanned the QR. Enforcing at enrollment is how a mistyped secret becomes a permanent lockout.
     """
     MfaDevice.objects.filter(user=user, confirmed_at__isnull=True).delete()
-    return MfaDevice.objects.create(user=user, secret=pyotp.random_base32())
+    # `secret` is a property with a setter (ADR-0027), which Django's Model.__init__ honours for
+    # non-field kwargs — the value is encrypted on the way in and the column never sees plaintext.
+    return MfaDevice.objects.create(user=user, secret=pyotp.random_base32())  # type: ignore[misc]
 
 
 def provisioning_uri(device: MfaDevice, user: User) -> str:
