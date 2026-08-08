@@ -24,10 +24,24 @@ class JournalLineSerializer(serializers.ModelSerializer[JournalLine]):
     quantity = serializers.DecimalField(
         max_digits=20, decimal_places=8, read_only=True, allow_null=True
     )
+    # The description lives on the *entry*, because it describes the movement rather than either
+    # leg of it. Projected onto the line anyway: a line is what a statement row is, and without
+    # this the transaction history renders an amount next to a UUID. Costs nothing given the
+    # `select_related("entry")` in AccountTransactionsView; costs a query per row without it.
+    description = serializers.CharField(source="entry.description", read_only=True)
 
     class Meta:
         model = JournalLine
-        fields = ("id", "entry_id", "account_id", "amount", "quantity", "currency", "created_at")
+        fields = (
+            "id",
+            "entry_id",
+            "account_id",
+            "amount",
+            "quantity",
+            "currency",
+            "description",
+            "created_at",
+        )
         read_only_fields = fields
 
 

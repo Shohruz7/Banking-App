@@ -58,7 +58,8 @@ class AccountTransactionsView(ListAPIView[JournalLine]):
             Account.objects.filter(owner=request_user(self.request)).spendable(),
             pk=self.kwargs["pk"],
         )
-        return account.lines.all()
+        # The entry carries the description; without this the history is an amount and a UUID.
+        return account.lines.select_related("entry")
 
 
 class TransferView(APIView):
