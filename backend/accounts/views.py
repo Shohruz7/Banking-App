@@ -32,6 +32,11 @@ class AccountViewSet(ReadOnlyModelViewSet[Account]):
     not spendable cash, and listing the two side by side under one ``balance`` field would invite
     exactly that misreading — by a client, and by whoever writes the next feature. Holdings have
     their own endpoint, where the share count is shown alongside the basis that explains it.
+
+    ``spendable()`` rather than ``cash()`` since Week 8: the latter also admitted the equity and
+    income accounts that fund and absorb a user's own money, which turned this list into a menu of
+    bookkeeping rows — and, because the transfer endpoint took its source from the same scope, into
+    a way to spend them.
     """
 
     serializer_class = AccountSerializer
@@ -45,4 +50,4 @@ class AccountViewSet(ReadOnlyModelViewSet[Account]):
         return AccountDetailSerializer if self.action == "retrieve" else AccountSerializer
 
     def get_queryset(self) -> QuerySet[Account]:
-        return Account.objects.filter(owner=request_user(self.request)).cash().with_balance()
+        return Account.objects.filter(owner=request_user(self.request)).spendable().with_balance()

@@ -122,9 +122,12 @@ class OrderListCreateView(APIView):
         if instrument is None:
             raise InstrumentNotFound
         # An account belonging to someone else is simply not in the queryset, so it 404s rather
-        # than confirming it exists (the accounts app's rule, applied here).
+        # than confirming it exists (the accounts app's rule, applied here). `spendable()` closes
+        # the brokerage door on the same hole the transfer endpoint had: `place_order` refuses a
+        # *position* account but not an equity or income one, so a realized loss could have been
+        # spent on shares even after it could no longer be transferred out.
         cash_account = get_object_or_404(
-            Account.objects.filter(owner=actor), pk=data["cash_account"]
+            Account.objects.filter(owner=actor).spendable(), pk=data["cash_account"]
         )
 
         try:

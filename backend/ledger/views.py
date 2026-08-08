@@ -48,12 +48,15 @@ class AccountTransactionsView(ListAPIView[JournalLine]):
     serializer_class = JournalLineSerializer
 
     def get_queryset(self) -> QuerySet[JournalLine]:
-        # Scoped to cash accounts as well as to the owner. The accounts endpoint has always shown
-        # only `.cash()`, so an instrument account's id was never discoverable here — but since
-        # ADR-0025 there are two kinds of instrument account, and the contra's history is a page of
-        # zero-amount rows that mean nothing to a customer. Holdings are read through /holdings/.
+        # Scoped to spendable accounts as well as to the owner, matching what /accounts/ lists so
+        # an id from that list is exactly an id that works here. Instrument accounts are excluded
+        # because since ADR-0025 there are two kinds and the contra's history is a page of
+        # zero-amount rows that mean nothing to a customer; holdings are read through /holdings/.
+        # The equity and income accounts are excluded because they are the *other side* of the
+        # customer's money — a ledger view of them belongs in the admin, not in a statement.
         account = get_object_or_404(
-            Account.objects.filter(owner=request_user(self.request)).cash(), pk=self.kwargs["pk"]
+            Account.objects.filter(owner=request_user(self.request)).spendable(),
+            pk=self.kwargs["pk"],
         )
         return account.lines.all()
 
@@ -94,10 +97,16 @@ class TransferView(APIView):
         data: dict[str, Any] = serializer.validated_data
         actor = request_user(request)
 
-        # Source must be the requester's own account; anything else is indistinguishable from
-        # "no such account".
-        source = get_object_or_404(Account.objects.filter(owner=actor), pk=data["source_account"])
-        destination = Account.objects.filter(pk=data["destination_account"]).first()
+        # Source must be a spendable account of the requester's own; anything else is
+        # indistinguishable from "no such account". `spendable()` and not merely `owner=` is
+        # load-bearing: a realized loss sits *positive* in the user's income account, and without
+        # this scope transferring it out converted that loss into money.
+        source = get_object_or_404(
+            Account.objects.filter(owner=actor).spendable(), pk=data["source_account"]
+        )
+        # Deliberately not owner-scoped — paying somebody else is the point — but money-scoped for
+        # the same reason as the source: nobody's realized-P&L account is a payee.
+        destination = Account.objects.spendable().filter(pk=data["destination_account"]).first()
         if destination is None:
             raise DestinationNotFound
         if source.pk == destination.pk:
