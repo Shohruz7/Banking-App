@@ -93,6 +93,24 @@ class AccountQuerySet(models.QuerySet["Account"]):
         """Only ordinary money accounts — everything that is not instrument-backed."""
         return self.filter(instrument__isnull=True)
 
+    def spendable(self) -> "AccountQuerySet":
+        """Accounts holding money the owner can actually move.
+
+        :meth:`cash` means "not a position", which is a narrower claim than it reads like. It also
+        admits the *equity* opening-balances account that funding posts against and the *income*
+        realized-P&L account a sell creates — the other side of a user's own money, not money.
+
+        ``trading.portfolio.cash_balance_for`` and ``statements.services`` had always added the
+        ``account_type`` filter by hand, each with its own comment explaining why. The endpoints had
+        not, and there the omission moved money: ``trading.services._sell_lines`` posts the residual
+        as ``amount=-gain``, so a realized **loss** leaves the income account with a *positive*
+        balance, and a transfer scoped by owner alone would happily pay it out as cash.
+
+        Same predicate as :meth:`Account._deserves_a_number` — an account a customer holds is
+        exactly an account worth printing a number on.
+        """
+        return self.cash().filter(account_type=AccountType.ASSET)
+
 
 class Account(models.Model):
     """A ledger account owned by a user. UUIDv7 PK: non-enumerable, index-local (ADR-0005)."""
