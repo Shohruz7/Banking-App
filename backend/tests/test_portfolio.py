@@ -213,7 +213,7 @@ def test_holdings_endpoint_now_reports_unrealized_pnl(
     instrument.last_price = Decimal("110.0000")
     instrument.save(update_fields=["last_price"])
 
-    body = auth_client.get(reverse("holdings")).json()
+    body = auth_client.get(reverse("holdings")).json()["results"]
 
     assert body[0]["market_value"] == "220.0000"
     assert body[0]["unrealized_pnl"] == "20.0000"

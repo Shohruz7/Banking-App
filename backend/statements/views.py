@@ -11,6 +11,8 @@ from typing import Any
 from django.db.models import QuerySet
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from rest_framework.generics import ListAPIView
 from rest_framework.request import Request
 from rest_framework.views import APIView
@@ -46,6 +48,15 @@ class StatementDownloadView(APIView):
     which is also what keeps this working unchanged when Week 8 points ``default`` at S3.
     """
 
+    @extend_schema(
+        responses={(200, "application/pdf"): OpenApiTypes.BINARY},
+        summary="Download a statement PDF",
+        description=(
+            "Owner-scoped: another user's statement is a 404, not a 403, so the endpoint does not "
+            "confirm that it exists. MEDIA_URL is deliberately unrouted, making this the only path "
+            "to a generated file (ADR-0021)."
+        ),
+    )
     def get(self, request: Request, pk: Any) -> FileResponse:
         statement = get_object_or_404(Statement.objects.filter(user=request_user(request)), pk=pk)
         return FileResponse(

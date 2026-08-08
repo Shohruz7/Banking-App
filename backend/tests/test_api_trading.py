@@ -174,9 +174,10 @@ def test_orders_are_owner_scoped(
     their_client = APIClient()
     their_client.credentials(HTTP_AUTHORIZATION=f"Bearer {theirs['access']}")
 
-    assert their_client.get(reverse("order-list-create")).json() == []
+    # Paginated since Week 7 — the list lives under "results".
+    assert their_client.get(reverse("order-list-create")).json()["results"] == []
     assert their_client.get(reverse("order-detail", args=[created["id"]])).status_code == 404
-    assert len(my_client.get(reverse("order-list-create")).json()) == 1
+    assert len(my_client.get(reverse("order-list-create")).json()["results"]) == 1
 
 
 def test_cancelling_a_filled_order_is_a_conflict(
@@ -221,7 +222,7 @@ def test_holdings_report_quantity_basis_and_market_value(
     response = auth_client.get(reverse("holdings"))
 
     assert response.status_code == 200
-    holding = response.json()[0]
+    holding = response.json()["results"][0]
     assert holding["symbol"] == instrument.symbol
     assert holding["quantity"] == "4.00000000"
     assert holding["cost_basis"] == "400.0000"
@@ -244,7 +245,7 @@ def test_a_fully_sold_position_is_not_a_holding(
         format="json",
     )
 
-    assert auth_client.get(reverse("holdings")).json() == []
+    assert auth_client.get(reverse("holdings")).json()["results"] == []
 
 
 def test_holdings_are_owner_scoped(auth_client: APIClient, instrument: Instrument) -> None:
@@ -252,7 +253,7 @@ def test_holdings_are_owner_scoped(auth_client: APIClient, instrument: Instrumen
     stranger = UserFactory.create()
     give_shares(stranger, instrument, Decimal("9"), Decimal("900.00"))
 
-    assert auth_client.get(reverse("holdings")).json() == []
+    assert auth_client.get(reverse("holdings")).json()["results"] == []
 
 
 def test_position_accounts_are_absent_from_the_accounts_list(

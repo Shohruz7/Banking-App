@@ -8,10 +8,11 @@ tokens to a revocable session.
 
 from django.contrib import admin
 from django.urls import include, path
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
 from accounts.views import AccountViewSet
-from common.views import HealthView
+from common.views import HealthView, ReadinessView
 from identity.views import (
     LoginView,
     LogoutView,
@@ -41,6 +42,14 @@ router.register("instruments", InstrumentViewSet, basename="instrument")
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/health/", HealthView.as_view(), name="health"),
+    path("api/v1/ready/", ReadinessView.as_view(), name="ready"),
+    # The API describes itself (ADR-0028), and Week 9's typed client is generated from it.
+    path("api/v1/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path(
+        "api/v1/docs/",
+        SpectacularSwaggerView.as_view(url_name="schema"),
+        name="swagger-ui",
+    ),
     # Auth: register → token (→ mfa) → refresh → logout, plus MFA management.
     path("api/v1/auth/register/", RegisterView.as_view(), name="register"),
     path("api/v1/auth/me/", MeView.as_view(), name="me"),
@@ -80,3 +89,9 @@ urlpatterns = [
     ),
     path("api/v1/", include(router.urls)),
 ]
+
+# Django's own 404/500 pages are HTML. A client that always parses `response.json()["error"]` broke
+# on exactly the two responses it most needs to handle, because `common.exceptions` only wraps what
+# DRF raised — an unrouted path and an unhandled exception never reach it (ADR-0006).
+handler404 = "common.views.not_found"
+handler500 = "common.views.server_error"

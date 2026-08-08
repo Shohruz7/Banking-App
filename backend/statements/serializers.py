@@ -1,5 +1,6 @@
 """Statement serializers — the index a client browses before downloading anything."""
 
+from django.urls import reverse
 from rest_framework import serializers
 
 from .models import Statement
@@ -43,4 +44,6 @@ class StatementSerializer(serializers.ModelSerializer[Statement]):
         return obj.account.name if obj.account is not None else "Brokerage"
 
     def get_download_url(self, obj: Statement) -> str:
-        return f"/api/v1/statements/{obj.pk}/download/"
+        # reverse(), not an f-string: the path prefix is a routing decision and hardcoding it here
+        # means /api/v2/ (or a mount under a subpath) silently serves broken links.
+        return reverse("statement-download", kwargs={"pk": obj.pk})

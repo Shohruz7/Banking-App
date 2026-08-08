@@ -7,6 +7,7 @@ read if present but is never committed.
 
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import environ
 from celery.schedules import crontab
@@ -30,6 +31,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
+    "drf_spectacular",
     "rest_framework_simplejwt",
     # Must be installed unconditionally: BlacklistMixin's methods are gated on INSTALLED_APPS at
     # class-definition time, so a conditional install makes refresh.blacklist() a silent no-op.
@@ -81,8 +83,31 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASES = {
     "default": env.db("DATABASE_URL", default="postgres://banking:banking@localhost:5432/banking"),
 }
+# Reuse connections rather than opening one per request. Postgres connection setup is not free and
+# every request in this app makes several queries; 0 (the default) pays that cost every time.
+# CONN_HEALTH_CHECKS is what makes reuse safe: without it a connection killed by a restart or a
+# failover is handed to a request that then fails, once, for no reason it can act on.
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
+# Three Redis clients, three logical databases. They shared DB 0 until Week 7, which meant a
+# `celery purge` or a stray FLUSHDB during an incident would also drop every live WebSocket's group
+# membership and every throttle counter — three unrelated blast radii welded together.
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+
+
+def _redis_db(url: str, index: int) -> str:
+    """The same Redis server, a different logical database.
+
+    Rewrites only the path, via a real URL parse. String surgery gets this wrong in a way that is
+    quiet until it is not: `rstrip("/0123456789")` on `redis://host:6379/0` also eats the port.
+    """
+    parsed = urlsplit(url)
+    return urlunsplit(parsed._replace(path=f"/{index}"))
+
+
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=_redis_db(REDIS_URL, 1))
+CHANNEL_LAYER_URL = env("CHANNEL_LAYER_URL", default=_redis_db(REDIS_URL, 2))
 
 # The channel layer (ADR-0022). It must be shared: a fill commits in a web worker and has to reach
 # a socket held by a different process, and a price tick is published from Celery entirely — an
@@ -90,7 +115,7 @@ REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [REDIS_URL]},
+        "CONFIG": {"hosts": [CHANNEL_LAYER_URL]},
     }
 }
 
@@ -104,13 +129,28 @@ WS_MAX_SUBSCRIPTIONS = env.int("WS_MAX_SUBSCRIPTIONS", default=25)
 
 # Celery (ADR-0019). Redis is the broker; there is no result backend because nothing waits on a
 # return value — Beat fires tasks, tasks write rows, and the database is the result.
-CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL)
 CELERY_TIMEZONE = "UTC"
 # Surface a task exception instead of swallowing it into a result nobody reads.
 CELERY_TASK_EAGER_PROPAGATES = True
 # A tick that arrives late is worthless — a price is only current for one interval. Better to drop
 # a backlog than to replay a stale market at speed after an outage.
 CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": 3600}
+
+# A worker killed mid-task should not silently lose the task (ADR-0019). With acks_late the message
+# is only acknowledged once the task returns, so a SIGKILL between tick and commit means the tick is
+# redelivered rather than dropped. Safe here because every scheduled task is already idempotent —
+# `advance_prices` holds a cache mutex, statement generation collides with a unique index, and the
+# reconciliation scan writes nothing.
+CELERY_TASK_ACKS_LATE = True
+# With acks_late, prefetching hoards messages a dying worker would have to give back. One at a time.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+# Soft first, so a task gets an exception it can log before the hard kill takes the process.
+CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=300)
+CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=360)
+# A worker that starts before Redis is reachable should wait, not crash-loop the container.
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# Recycle workers periodically: the cheapest defence against a slow leak in a long-lived process.
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 500
 
 # How often the simulated market moves (ADR-0017). Scales the GBM step, so changing it changes the
 # clock the annualized drift and volatility are measured against, not just the row count.
@@ -141,6 +181,21 @@ CELERY_BEAT_SCHEDULE = {
         "task": "statements.generate_monthly",
         "schedule": crontab(day_of_month="1", hour=0, minute=15),
     },
+    # Nightly reconciliation (ADR-0026). Three of the ledger's invariants are enforced by Postgres
+    # at COMMIT; the no-overdraft rule cannot be, because a deferred trigger cannot see uncommitted
+    # transactions. This is the backstop for that one, run over committed data where the question is
+    # answerable. 03:20 so it does not share a minute with anything else.
+    "check-ledger-invariants": {
+        "task": "ledger.check_invariants",
+        "schedule": crontab(hour=3, minute=20),
+    },
+    # Promised in Week 4, floated in Week 5, never landed until now: SimpleJWT's OutstandingToken
+    # table grows by one row per login forever, and nothing was pruning it. Weekly is ample — the
+    # rows are only interesting while a refresh token could still be presented, which is one day.
+    "flush-expired-tokens": {
+        "task": "identity.flush_expired_tokens",
+        "schedule": crontab(day_of_week="sun", hour=4, minute=0),
+    },
 }
 
 # DRF keeps throttle history here (ADR-0015). The default LocMemCache is per-process, so behind
@@ -168,6 +223,48 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+# Without this `collectstatic` cannot run, so a production deploy serves the admin with no CSS and
+# no JS. It went unnoticed for six weeks because dev serves static files from the apps directly.
+STATIC_ROOT = env("STATIC_ROOT", default=str(BASE_DIR / "staticfiles"))
+
+# Logging (ADR-0028). Django ships a default that sends `django.*` at WARNING to the console and
+# leaves every other logger inheriting a root that does nothing — so before this, all eight
+# `logger.info` calls in realtime/, statements/, markets/ and trading/ were silently discarded and
+# the `logger.exception` calls arrived with no request id attached.
+LOGGING = {
+    "version": 1,
+    # False, deliberately: the default config is replaced rather than layered under, so there is one
+    # place that decides where a line goes.
+    "disable_existing_loggers": False,
+    "filters": {
+        "request_id": {"()": "common.logging.RequestIDFilter"},
+    },
+    "formatters": {
+        # Key=value rather than prose: greppable, and the shape a log shipper can parse later
+        # without a regex per message.
+        "standard": {
+            "format": (
+                "%(asctime)s %(levelname)-8s %(name)s request_id=%(request_id)s %(message)s"
+            ),
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+            "filters": ["request_id"],
+        },
+    },
+    "root": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO")},
+    "loggers": {
+        # Django's own request logger duplicates what DRF's exception handler already reports for
+        # handled 4xx; propagate=False keeps one line per event rather than two.
+        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
+        # Query logging is a deliberate opt-in. At DEBUG this logger prints every SQL statement,
+        # which in a ledger means printing amounts and account ids into the log.
+        "django.db.backends": {"level": "WARNING", "propagate": True},
+    },
+}
 
 # Generated statement PDFs (ADR-0021). Written through Django's storage API so Week 8 repoints
 # `default` at S3 without touching a line of statement code.
@@ -181,6 +278,21 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# Key encryption keys for the envelope-encrypted columns (ADR-0027), newest first: the first entry
+# encrypts new writes, and every entry can still decrypt what it wrote. Rotation is "prepend a key,
+# deploy, re-save the rows, drop the old one" — no flag day.
+#
+# Format is `label:urlsafe-b64-32-bytes` pairs, comma-separated, in one variable so a deploy carries
+# its whole keyring rather than N variables that can be half-updated. dev.py supplies an insecure
+# default; prod.py has none, and refuses to boot without one, the same posture SECRET_KEY takes.
+FIELD_ENCRYPTION_KEYS: dict[str, str] = {
+    label: key
+    for label, _, key in (
+        pair.partition(":") for pair in env.list("FIELD_ENCRYPTION_KEYS", default=[])
+    )
+    if key
+}
+
 # API conventions locked in ADR-0006: one error envelope, cursor pagination.
 REST_FRAMEWORK = {
     # Session-aware, so revoking an AuthSession kills its access tokens too (ADR-0013).
@@ -189,6 +301,7 @@ REST_FRAMEWORK = {
     # out explicitly. The safe direction to forget in is "denied".
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "EXCEPTION_HANDLER": "common.exceptions.api_exception_handler",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "common.pagination.DefaultCursorPagination",
     "PAGE_SIZE": 20,
     # All three run everywhere (ADR-0015). ScopedRateThrottle short-circuits on views without a
@@ -226,4 +339,24 @@ SIMPLE_JWT = {
     "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
     "TOKEN_OBTAIN_SERIALIZER": "identity.serializers.TokenObtainPairWithMFASerializer",
     "TOKEN_REFRESH_SERIALIZER": "identity.serializers.SessionRefreshSerializer",
+}
+
+# The generated API description (ADR-0028). Replaces a hand-maintained README table that had already
+# drifted from the code it described.
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Banking Platform API",
+    "DESCRIPTION": (
+        "Double-entry ledger, transfers, brokerage, statements and a real-time stream. "
+        "Every monetary value crosses the wire as a decimal string, never a float (ADR-0009); "
+        "errors share one envelope (ADR-0006); lists are cursor-paginated."
+    ),
+    "VERSION": "1.0.0",
+    # The schema endpoint serves the document; it does not need to appear inside it.
+    "SERVE_INCLUDE_SCHEMA": False,
+    # Strip the prefix from every operation id, so `accounts_list` is not `api_v1_accounts_list`.
+    "SCHEMA_PATH_PREFIX": "/api/v1",
+    # Loaded for its side effect: the module registers the OpenApiAuthenticationExtension for this
+    # project's JWT class, without which every authenticated endpoint documents as public.
+    "EXTENSIONS_INFO": {},
+    "PREPROCESSING_HOOKS": ["common.schema_hooks.register_extensions"],
 }

@@ -9,13 +9,20 @@ never comes through HTTP.
 from typing import Any
 
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
+from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import BaseThrottle
 from rest_framework.views import APIView
 
 from accounts.models import Account
+from audit.models import AuditAction
+from audit.services import record_audit
 from common.auth import request_user
+from common.pagination import DefaultCursorPagination
+from common.schema import error_response
 from ledger.api_exceptions import InsufficientFunds
 from ledger.exceptions import InsufficientFundsError
 from markets.models import Instrument
@@ -25,16 +32,18 @@ from .api_exceptions import (
     InstrumentNotFound,
     InsufficientShares,
     InvalidOrder,
+    OrderKeyConflict,
     OrderNotOpen,
 )
 from .exceptions import (
     InstrumentInactiveError,
     InsufficientSharesError,
     InvalidOrderError,
+    OrderKeyConflictError,
     OrderNotOpenError,
 )
 from .models import Order
-from .portfolio import holdings_for, portfolio_for
+from .portfolio import Holding, holdings_for, portfolio_for
 from .serializers import (
     HoldingSerializer,
     OrderCreateSerializer,
@@ -57,16 +66,52 @@ class OrderListCreateView(APIView):
     one rejected by the Celery sweep are recorded identically.
     """
 
-    throttle_scope = "order"
+    def get_throttles(self) -> list[BaseThrottle]:
+        """Reading orders and placing them are different budgets.
 
+        One `throttle_scope` on the class charged a GET against the 30/min *placement* allowance, so
+        a client polling its own order list could throttle itself out of trading. Placement is the
+        scarce operation; listing is an ordinary read and falls back to the user ceiling.
+        """
+        self.throttle_scope = "order" if self.request.method == "POST" else "user"
+        return super().get_throttles()
+
+    @extend_schema(
+        responses=OrderSerializer(many=True),
+        summary="List your orders, newest first",
+        # Explicit, because two different views both generate "orders_retrieve" from the URL
+        # and spectacular would otherwise disambiguate them with a numeral suffix.
+        operation_id="orders_list",
+    )
     def get(self, request: Request) -> Response:
+        """Cursor-paginated, newest first.
+
+        Unbounded until Week 7: this returned every order the user had ever placed, in one response,
+        growing forever. It was the endpoint most likely to be the first to time out.
+        """
         orders = (
             Order.objects.filter(user=request_user(request))
             .select_related("instrument")
             .order_by("-created_at")
         )
-        return Response(OrderSerializer(orders, many=True).data)
+        paginator = DefaultCursorPagination()
+        page = paginator.paginate_queryset(orders, request, view=self)
+        return paginator.get_paginated_response(OrderSerializer(page, many=True).data)
 
+    @extend_schema(
+        request=OrderCreateSerializer,
+        responses={
+            201: OrderSerializer,
+            400: error_response("insufficient_funds", "Not enough funds."),
+            409: error_response("order_key_conflict", "Key already used."),
+        },
+        summary="Place an order",
+        description=(
+            "A market order returns 201 already `filled`; a limit order returns 201 `open` and "
+            "rests until the market crosses it. Both are 201 — `status`, not the HTTP code, is "
+            "what says whether money moved."
+        ),
+    )
     def post(self, request: Request) -> Response:
         serializer = OrderCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -93,6 +138,22 @@ class OrderListCreateView(APIView):
                 limit_price=data["limit_price"],
                 idempotency_key=data["idempotency_key"],
             )
+        except OrderKeyConflictError as exc:
+            # Audited before the 409 leaves, and with this requester's own request in the context —
+            # never the order it collided with, which may not be theirs to see (ADR-0024).
+            record_audit(
+                action=AuditAction.ORDER_KEY_CONFLICT,
+                actor=actor,
+                target_type="account",
+                target_id=str(cash_account.pk),
+                context={
+                    "idempotency_key": data["idempotency_key"],
+                    "symbol": instrument.symbol,
+                    "side": data["side"],
+                    "quantity": data["quantity"],
+                },
+            )
+            raise OrderKeyConflict from exc
         except InstrumentInactiveError as exc:
             raise InstrumentInactive(str(exc)) from exc
         except InsufficientFundsError as exc:
@@ -108,6 +169,11 @@ class OrderListCreateView(APIView):
 class OrderDetailView(APIView):
     """``GET /api/v1/orders/{id}/`` — one of the requester's own orders."""
 
+    @extend_schema(
+        responses=OrderSerializer,
+        summary="Retrieve one of your orders",
+        operation_id="orders_retrieve",
+    )
     def get(self, request: Request, pk: Any) -> Response:
         order = get_object_or_404(
             Order.objects.filter(user=request_user(request)).select_related("instrument"), pk=pk
@@ -120,6 +186,14 @@ class OrderCancelView(APIView):
 
     throttle_scope = "order"
 
+    @extend_schema(
+        request=None,
+        responses={
+            200: OrderSerializer,
+            409: error_response("order_not_open", "That order is no longer open."),
+        },
+        summary="Cancel a resting order",
+    )
     def post(self, request: Request, pk: Any) -> Response:
         actor = request_user(request)
         order = get_object_or_404(
@@ -140,13 +214,24 @@ class HoldingsView(APIView):
     worth" is exactly the drift ADR-0016 built derived holdings to avoid.
     """
 
+    @extend_schema(responses=HoldingSerializer(many=True), summary="Your holdings")
     def get(self, request: Request) -> Response:
         holdings = holdings_for(request_user(request))
+        # Bounded by the instrument count rather than by history, so this is not the urgent case
+        # `/orders/` was — but "bounded by how many symbols exist" is not a bound the API should
+        # promise, and paginating now means the shape does not change when it matters.
+        paginator = LimitOffsetPagination()
+        paginator.default_limit = 50
+        # A list, not a queryset: holdings are computed, not selected. LimitOffsetPagination slices
+        # any sequence, which is why it is the right paginator here — cursor pagination needs an
+        # ordering column on a model, and a Holding is a dataclass.
+        page: list[Holding] = paginator.paginate_queryset(holdings, request, view=self)  # type: ignore[arg-type,assignment]
         # The DRF stubs type a plain Serializer's instance argument as the single-object type, so
         # they cannot express `many=True` (which returns a ListSerializer). The serializer is not
         # optional here: DRF's JSON encoder renders a bare Decimal as a float, and ADR-0009 says
         # money never crosses the wire as one.
-        return Response(HoldingSerializer(holdings, many=True).data)  # type: ignore[arg-type]
+        data = HoldingSerializer(page, many=True).data  # type: ignore[arg-type]
+        return paginator.get_paginated_response(data)
 
 
 class PortfolioView(APIView):
@@ -156,5 +241,6 @@ class PortfolioView(APIView):
     and its correctness is therefore a property of the postings, not of anything it stores.
     """
 
+    @extend_schema(responses=PortfolioSerializer, summary="Cash, holdings and total value")
     def get(self, request: Request) -> Response:
         return Response(PortfolioSerializer(portfolio_for(request_user(request))).data)

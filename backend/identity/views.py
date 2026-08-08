@@ -6,7 +6,8 @@ and carries the tightest throttle scope in the config (ADR-0015).
 """
 
 from django.contrib.auth.models import User
-from rest_framework import status
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import serializers, status
 from rest_framework.generics import RetrieveAPIView
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
@@ -23,6 +24,9 @@ from .models import AuthSession, MfaDevice, RevokeReason
 from .serializers import (
     LogoutSerializer,
     MfaCodeSerializer,
+    # Defined in Week 4 and used by nothing since — it existed to document a shape no code read.
+    # The schema (ADR-0028) is the reader it was always waiting for.
+    MfaEnrollResponseSerializer,
     MFAVerifySerializer,
     RegisterSerializer,
     UserSerializer,
@@ -45,6 +49,12 @@ class RegisterView(APIView):
     authentication_classes = ()
     throttle_scope = "register"
 
+    @extend_schema(
+        request=RegisterSerializer,
+        responses={201: UserSerializer},
+        summary="Create an account",
+        description="Returns the new user, never a token — registration is not a login.",
+    )
     def post(self, request: Request) -> Response:
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -100,6 +110,15 @@ class LogoutView(APIView):
     nothing to say.
     """
 
+    @extend_schema(
+        request=LogoutSerializer,
+        responses={204: None},
+        summary="Log out",
+        description=(
+            "Blacklists the refresh token **and** revokes its session, so every access token from "
+            "that login stops working immediately rather than living out its remaining lifetime."
+        ),
+    )
     def post(self, request: Request) -> Response:
         serializer = LogoutSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
@@ -117,6 +136,16 @@ class MfaEnrollView(APIView):
 
     throttle_scope = "mfa"
 
+    @extend_schema(
+        request=None,
+        responses={201: MfaEnrollResponseSerializer},
+        summary="Begin MFA enrollment",
+        description=(
+            "The only response that carries the TOTP secret. It is stored encrypted at rest "
+            "(ADR-0027); this is the one moment it crosses the wire, because the user has to "
+            "scan it. Enrollment does not enforce MFA — confirmation does."
+        ),
+    )
     def post(self, request: Request) -> Response:
         user = request_user(request)
         if confirmed_device(user) is not None:
@@ -141,6 +170,13 @@ class MfaConfirmView(APIView):
 
     throttle_scope = "mfa"
 
+    @extend_schema(
+        request=MfaCodeSerializer,
+        responses={
+            200: inline_serializer("MfaEnabled", {"mfa_enabled": serializers.BooleanField()})
+        },
+        summary="Confirm an enrolled MFA device",
+    )
     def post(self, request: Request) -> Response:
         user = request_user(request)
         device = MfaDevice.objects.filter(user=user, confirmed_at__isnull=True).first()
@@ -172,6 +208,15 @@ class MfaDisableView(APIView):
 
     throttle_scope = "mfa"
 
+    @extend_schema(
+        request=MfaCodeSerializer,
+        responses={204: None},
+        summary="Disable MFA",
+        description=(
+            "Every session is revoked on the way out. Changing an account's authentication "
+            "requirements is exactly when any session an attacker holds should stop working."
+        ),
+    )
     def post(self, request: Request) -> Response:
         user = request_user(request)
         device = confirmed_device(user)
