@@ -12,16 +12,25 @@ convention in application code.
 ## What it does
 
 **Ledger.** Accounts hold no balance column; a balance is the sum of an account's signed journal
-lines, derived on read. Every entry's lines must sum to exactly zero, and that invariant is
-enforced at `COMMIT` by a deferred Postgres constraint trigger — so the ledger cannot go
-unbalanced even if something writes to it via raw SQL. Money is `NUMERIC(20,4)`, always `Decimal`,
-rounded half-even in exactly one place.
+lines, derived on read. Two invariants are enforced at `COMMIT` by deferred Postgres constraint
+triggers, so neither can be broken even by raw SQL: an entry's signed amounts sum to exactly zero,
+and its share quantities net to zero **per instrument**. The second one arrived in Week 7 — before
+that, shares were protected only by a rule in the service, which meant a hand-written `INSERT` could
+create them from nothing. Money is `NUMERIC(20,4)`, always `Decimal`, rounded half-even in exactly
+one place.
+
+What that second trigger does *not* claim is worth stating: it enforces conservation, not
+authorization. Shares cannot appear without a corresponding issuance leg — exactly as strong as the
+amount invariant, and no stronger.
 
 **Transfers.** A transfer is just a two-line journal entry, so it inherits every ledger guarantee.
 On top of that it locks both account rows in a fixed order — ascending UUID, regardless of
 direction — so two opposing transfers queue instead of deadlocking, and it reads the source
 balance *under that lock*, so a race cannot overdraw an account. A request carrying an idempotency
 key replays instead of double-posting: the retry returns the original entry rather than an error.
+A key is bound to a digest of the request that first used it, so reusing one for a *different*
+transfer is a 409 rather than a silent replay of the wrong movement — and, since the key namespace
+is global, so is reusing one that happens to belong to somebody else.
 
 **Authentication.** Registration, then login that issues a short-lived access token and a rotating
 refresh token. TOTP MFA is enforced at login through a two-step challenge, with QR provisioning at
@@ -29,6 +38,8 @@ enrolment and each code burned after use so it cannot be replayed. Every token i
 revocable session via a `sid` claim, which is what makes an *access* token revocable — a blacklist
 of refresh tokens structurally cannot do that. Replaying a rotated refresh token revokes the
 entire token family, so the successor an attacker holds dies along with the one they replayed.
+TOTP secrets are envelope-encrypted at rest — a database dump is not an MFA bypass — under a key
+encryption key that can be rotated without a flag day, behind an interface a cloud KMS drops into.
 
 **Brokerage.** 55 seeded instruments whose prices walk under geometric Brownian motion, advanced on
 a schedule by Celery Beat. Market orders fill inside the request that places them; limit orders rest
@@ -119,9 +130,17 @@ uv run python manage.py generate_statements --period 2026-07
 All endpoints live under `/api/v1/`. Everything is authenticated by default; the exceptions opt out
 explicitly.
 
+**The authoritative reference is generated, not this table.** `GET /api/v1/schema/` serves an
+OpenAPI document and `/api/v1/docs/` renders it; a test asserts the generator produces no warnings,
+because a schema that silently omits an endpoint is worse than a stale table. The table below is a
+map, and it is checked against the schema by nothing — read it for orientation and the schema for
+truth.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/health/` | Liveness probe (public, never throttled) |
+| GET | `/health/` | Liveness probe — checks nothing, on purpose (public, never throttled) |
+| GET | `/ready/` | Readiness probe — Postgres and cache; 503 names the failing one |
+| GET | `/schema/`, `/docs/` | The OpenAPI document, and Swagger over it |
 | POST | `/auth/register/` | Create an account |
 | POST | `/auth/token/` | Log in — returns a token pair, or an MFA challenge |
 | POST | `/auth/token/mfa/` | Complete the MFA challenge with a TOTP code |
@@ -131,15 +150,16 @@ explicitly.
 | POST | `/auth/mfa/enroll/` | Start TOTP enrolment — returns the secret, URI and QR |
 | POST | `/auth/mfa/confirm/` | Activate the authenticator |
 | POST | `/auth/mfa/disable/` | Turn MFA off and revoke every session |
-| GET | `/accounts/`, `/accounts/{id}/` | Owned cash accounts with derived balances |
+| GET | `/accounts/` | Owned cash accounts, balances derived, numbers masked |
+| GET | `/accounts/{id}/` | One account, with its account number in full |
 | GET | `/accounts/{id}/transactions/` | Journal lines, newest first, cursor-paginated |
-| POST | `/transfers/` | Move money — 201 posted, 200 on idempotent replay |
+| POST | `/transfers/` | Move money — 201 posted, 200 on replay, 409 on a key reused for a different request |
 | GET | `/instruments/`, `/instruments/{symbol}/` | Tradeable instruments with their latest price |
 | GET | `/instruments/{symbol}/prices/` | Tick history, newest first, cursor-paginated |
 | POST | `/orders/` | Place an order — 201 `filled` (market) or 201 `open` (limit) |
-| GET | `/orders/`, `/orders/{id}/` | Own orders and their outcomes |
+| GET | `/orders/`, `/orders/{id}/` | Own orders and their outcomes, cursor-paginated |
 | POST | `/orders/{id}/cancel/` | Withdraw a resting order — 409 if it already resolved |
-| GET | `/holdings/` | Positions: quantity, cost basis, average cost, market value |
+| GET | `/holdings/` | Positions: quantity, cost basis, average cost, market value (paginated) |
 | GET | `/portfolio/` | Cash, holdings value, cost basis, unrealized and realized P&L |
 | GET | `/statements/` | Generated monthly statements, newest first |
 | GET | `/statements/{id}/download/` | Stream the PDF — the only path to a generated file |
@@ -155,7 +175,8 @@ socket.send(JSON.stringify({ type: "subscribe", symbols: ["AAPL"] }));   // → 
 The socket closes `4401` if it never authenticates or its token expires, `4403` when its session is
 revoked, and `4429` past the subscription ceiling.
 
-Errors share one envelope: `{"error": {"code": ..., "message": ..., "details": {...}}}`.
+Errors share one envelope: `{"error": {"code": ..., "message": ..., "details": {...}}}` — including
+404s on unrouted paths and unhandled 500s, which returned Django's HTML pages until Week 7.
 An account owned by someone else returns 404, never 403 — a 403 would confirm it exists.
 Money crosses the wire as a string (`"150.0000"`), never a float; so do share quantities
 (`"6.50000000"`).
@@ -181,13 +202,20 @@ deliberately broken implementation first, to confirm they actually fail when the
 to protect is removed. Two tests were rewritten after that check showed they passed against the
 broken version too.
 
+Coverage is a gate rather than a number in a commit message: CI fails below 96%. The figure is
+**app code only, with branch coverage** — it excludes the test suite, which is ~100% covered by
+construction and was inflating the headline. Measured honestly it is 97%, and what remains uncovered
+is admin display helpers and the demo seeding command.
+
 ```sh
 cd backend
-uv run pytest               # test suite
-uv run ruff check .         # lint
-uv run ruff format .        # format
-uv run mypy .               # type check
-uvx pre-commit install      # git hooks (ruff + mypy on every commit)
+uv run pytest                            # test suite (fails under 96% coverage)
+uv run ruff check .                      # lint
+uv run ruff format .                     # format
+uv run mypy .                            # type check
+uv run python manage.py check --deploy   # production settings
+uv run python manage.py check_ledger_invariants   # reconcile the ledger
+uvx pre-commit install                   # git hooks (ruff + mypy on every commit)
 ```
 
 ## Repository layout
