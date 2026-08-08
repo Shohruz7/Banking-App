@@ -69,7 +69,10 @@ def _send(group: str, message: dict[str, Any]) -> None:
         return
     try:
         async_to_sync(layer.group_send)(group, message)
-    except Exception:  # noqa: BLE001 — see the module docstring: never fail a committed write
+    # Blind, deliberately: see the module docstring — a dropped notification must never fail a
+    # posting that already committed. BLE001 does not fire because the handler logs with
+    # exception info, which is the shape that makes a broad except accountable.
+    except Exception:
         logger.exception("could not publish %s to %s", message.get("type"), group)
 
 

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# A force-push should cancel the run it superseded rather than queue behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: backend
@@ -13,6 +18,10 @@ jobs:
   checks:
     name: lint · types · tests
     runs-on: ubuntu-latest
+    # The concurrency tests coordinate threads through a barrier. Those barriers now carry their own
+    # timeout, but this is the backstop: without it, anything that wedges runs until GitHub's
+    # six-hour default kills it, burning the runner and telling you nothing.
+    timeout-minutes: 15
 
     services:
       postgres:
@@ -53,5 +62,28 @@ jobs:
       - name: Type check (mypy)
         run: uv run mypy .
 
+      # A model change without its migration used to merge green and fail on deploy.
+      - name: Migrations are in sync
+        run: uv run python manage.py makemigrations --check --dry-run
+
+      # The one command that would have caught the missing STATIC_ROOT. Runs against prod settings
+      # with throwaway secrets: what is being checked is the *configuration*, not these values.
+      - name: Deployment checks
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.prod
+          DJANGO_SECRET_KEY: ci-only-placeholder-key-not-used-to-sign-anything-at-all
+          DJANGO_ALLOWED_HOSTS: example.com
+          CACHE_URL: locmemcache://
+          FIELD_ENCRYPTION_KEYS: ci:ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
+        run: uv run python manage.py check --deploy --fail-level WARNING
+
+      # `--cov` alone printed a number and exited 0 regardless; the gate lives in pyproject.toml.
       - name: Tests (pytest)
-        run: uv run pytest --cov
+        run: uv run pytest --cov --cov-report=term-missing
+
+      # Advisory rather than blocking: a CVE published against a transitive dependency should not
+      # stop an unrelated bugfix from merging, but it should be visible on the run that introduced
+      # it rather than discovered by accident months later.
+      - name: Dependency audit
+        run: uv run --with pip-audit pip-audit --skip-editable
+        continue-on-error: true

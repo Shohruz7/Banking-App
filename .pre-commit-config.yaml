@@ -8,8 +8,12 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
 
+  # Keep this pin in step with the `ruff` floor in backend/pyproject.toml and with whatever
+  # `uv run ruff --version` reports. It drifted to 0.11.13 while CI ran 0.15, which means the hook
+  # formatted with one version and the pipeline checked with another — a formatting rule changed
+  # between them produces a commit that passes locally and fails on push, for no visible reason.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
+    rev: v0.15.20
     hooks:
       - id: ruff-check
         args: [--fix]

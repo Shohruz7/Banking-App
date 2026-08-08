@@ -6,12 +6,14 @@ obtained over HTTP through the actual login endpoint. Everything before this use
 so the whole auth stack could have been broken and every test would still have passed.
 """
 
+import shutil
 from collections.abc import Iterator
 from decimal import Decimal
 from typing import Any
 
 import pyotp
 import pytest
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.urls import reverse
@@ -34,6 +36,18 @@ from .factories import (
 @pytest.fixture
 def api_client() -> APIClient:
     return APIClient()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_up_media_root() -> Iterator[None]:
+    """Delete the throwaway MEDIA_ROOT when the session ends.
+
+    ``config.settings.test`` calls ``tempfile.mkdtemp`` at import time so statement PDFs are written
+    through the real storage API without landing in the repository. Nothing ever removed it, so
+    every pytest run since Week 6 left a directory of real generated PDFs in the system temp space.
+    """
+    yield
+    shutil.rmtree(settings.MEDIA_ROOT, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

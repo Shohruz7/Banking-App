@@ -13,6 +13,7 @@ passes or fails by luck — see that test's docstring for the reasoning.
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from typing import cast
 
 import pytest
 from django.contrib.auth.models import User
@@ -34,6 +35,12 @@ from trading.models import OrderSide, OrderType
 from trading.services import place_order, position_account_for
 
 _TIMEOUT = 20
+
+#: Seconds a thread will wait at the barrier before giving up. Without a timeout a barrier that
+#: one thread never reaches blocks forever — and with no `timeout-minutes` in CI that used to mean
+#: a hung job until GitHub's six-hour default killed it. Generous enough never to fire on a slow
+#: machine, short enough that a real deadlock fails the test instead of the build.
+BARRIER_TIMEOUT = 10
 
 
 def market_order(user: User, instrument: object, cash: object, side: str, quantity: str) -> None:
@@ -60,7 +67,7 @@ def test_concurrent_buys_cannot_overdraw_cash() -> None:
     cash = AccountFactory.create(owner=user)
     fund_account(cash, Decimal("1000.00"))
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
 
     def attempt() -> str:
         try:
@@ -90,7 +97,7 @@ def test_concurrent_sells_cannot_oversell_shares() -> None:
     fund_account(cash, Decimal("100.00"))
     give_shares(user, instrument, Decimal("8"), Decimal("800.00"))
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
 
     def attempt() -> str:
         try:
@@ -163,7 +170,7 @@ def test_a_trade_and_a_transfer_on_one_account_settle_correctly() -> None:
     fund_account(cash, Decimal("5000.00"))
     fund_account(other, Decimal("5000.00"))
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
 
     def buy() -> None:
         try:
@@ -216,12 +223,12 @@ def test_racing_fills_on_one_order_post_a_single_entry() -> None:
         limit_price=Decimal("100"),
     )
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
 
     def sweep() -> dict[str, int]:
         try:
             barrier.wait(timeout=_TIMEOUT)
-            return match_resting_orders()
+            return cast(dict[str, int], match_resting_orders())
         finally:
             connection.close()
 

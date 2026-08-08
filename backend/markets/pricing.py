@@ -16,7 +16,7 @@ an instrument that only goes up.
 import math
 import random
 from decimal import Decimal
-from typing import Protocol
+from typing import Protocol, cast
 
 from django.conf import settings
 from django.utils.module_loading import import_string
@@ -56,7 +56,9 @@ class GBMPriceSource:
         self.interval_seconds = (
             interval_seconds if interval_seconds is not None else settings.MARKET_TICK_SECONDS
         )
-        self._rng = random.Random(seed)
+        # S311: a simulated market wants reproducible pseudo-randomness, not entropy. A seeded
+        # generator is what makes the price tests deterministic (ADR-0017).
+        self._rng = random.Random(seed)  # noqa: S311
 
     def next_price(self, instrument: Instrument) -> Decimal:
         spot = float(instrument.current_price)
@@ -115,4 +117,4 @@ def get_price_source() -> PriceSource:
     source explicitly instead of reaching for this.
     """
     source_class = import_string(settings.PRICE_SOURCE)
-    return source_class()
+    return cast(PriceSource, source_class())

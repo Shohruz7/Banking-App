@@ -31,6 +31,12 @@ from tests.factories import AccountFactory, fund_account
 
 _TIMEOUT = 15
 
+#: Seconds a thread will wait at the barrier before giving up. Without a timeout a barrier that
+#: one thread never reaches blocks forever — and with no `timeout-minutes` in CI that used to mean
+#: a hung job until GitHub's six-hour default killed it. Generous enough never to fire on a slow
+#: machine, short enough that a real deadlock fails the test instead of the build.
+BARRIER_TIMEOUT = 10
+
 
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_transfers_cannot_overdraw() -> None:
@@ -39,7 +45,7 @@ def test_concurrent_transfers_cannot_overdraw() -> None:
     destination = AccountFactory.create()
     fund_account(source, Decimal("100.00"))
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
 
     def attempt() -> str:
         try:
@@ -69,7 +75,7 @@ def test_opposite_transfers_do_not_deadlock() -> None:
     fund_account(first, Decimal("100.00"))
     fund_account(second, Decimal("100.00"))
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
 
     def move(source: Account, destination: Account) -> None:
         try:
@@ -97,7 +103,7 @@ def test_idempotency_race_posts_one_entry() -> None:
     destination = AccountFactory.create()
     fund_account(source, Decimal("100.00"))
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
 
     def attempt() -> tuple[str, bool]:
         try:

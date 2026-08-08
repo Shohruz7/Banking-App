@@ -66,7 +66,7 @@ def test_previous_month_crosses_a_year_boundary() -> None:
 
 def test_parse_period_reads_a_month_and_rejects_anything_else() -> None:
     assert parse_period("2026-07").end == date(2026, 7, 31)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError):  # noqa: PT011 — strptime's message is not ours to pin
         parse_period("July 2026")
 
 
