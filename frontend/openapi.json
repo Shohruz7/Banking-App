@@ -1,0 +1,2181 @@
+{
+    "openapi": "3.0.3",
+    "info": {
+        "title": "Banking Platform API",
+        "version": "1.0.0",
+        "description": "Double-entry ledger, transfers, brokerage, statements and a real-time stream. Every monetary value crosses the wire as a decimal string, never a float (ADR-0009); errors share one envelope (ADR-0006); lists are cursor-paginated."
+    },
+    "paths": {
+        "/api/v1/accounts/": {
+            "get": {
+                "operationId": "accounts_list",
+                "description": "List and retrieve the requesting user's money accounts, each with its derived balance.\n\nPosition accounts are deliberately excluded (ADR-0016). Their balance is a *cost basis* in USD,\nnot spendable cash, and listing the two side by side under one ``balance`` field would invite\nexactly that misreading — by a client, and by whoever writes the next feature. Holdings have\ntheir own endpoint, where the share count is shown alongside the basis that explains it.\n\n``spendable()`` rather than ``cash()`` since Week 8: the latter also admitted the equity and\nincome accounts that fund and absorb a user's own money, which turned this list into a menu of\nbookkeeping rows — and, because the transfer endpoint took its source from the same scope, into\na way to spend them.",
+                "summary": "Your money accounts, with derived balances",
+                "parameters": [
+                    {
+                        "name": "cursor",
+                        "required": false,
+                        "in": "query",
+                        "description": "The pagination cursor value.",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedAccountList"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/accounts/{id}/": {
+            "get": {
+                "operationId": "accounts_retrieve",
+                "description": "List and retrieve the requesting user's money accounts, each with its derived balance.\n\nPosition accounts are deliberately excluded (ADR-0016). Their balance is a *cost basis* in USD,\nnot spendable cash, and listing the two side by side under one ``balance`` field would invite\nexactly that misreading — by a client, and by whoever writes the next feature. Holdings have\ntheir own endpoint, where the share count is shown alongside the basis that explains it.\n\n``spendable()`` rather than ``cash()`` since Week 8: the latter also admitted the equity and\nincome accounts that fund and absorb a user's own money, which turned this list into a menu of\nbookkeeping rows — and, because the transfer endpoint took its source from the same scope, into\na way to spend them.",
+                "summary": "One account, with its full account number",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AccountDetail"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/accounts/{id}/transactions/": {
+            "get": {
+                "operationId": "accounts_transactions_list",
+                "description": "An owned account's journal lines, newest first, cursor-paginated.\n\nOrdered by ``-created_at`` (the pagination default), which is exactly the\n``(account, created_at)`` composite index built in Week 2.",
+                "parameters": [
+                    {
+                        "name": "cursor",
+                        "required": false,
+                        "in": "query",
+                        "description": "The pagination cursor value.",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedJournalLineList"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/logout/": {
+            "post": {
+                "operationId": "auth_logout_create",
+                "description": "Blacklists the refresh token **and** revokes its session, so every access token from that login stops working immediately rather than living out its remaining lifetime.",
+                "summary": "Log out",
+                "tags": [
+                    "auth"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Logout"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Logout"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Logout"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No response body"
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/me/": {
+            "get": {
+                "operationId": "auth_me_retrieve",
+                "description": "The requesting user's own profile — never anyone else's, by construction.",
+                "tags": [
+                    "auth"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/User"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/mfa/confirm/": {
+            "post": {
+                "operationId": "auth_mfa_confirm_create",
+                "description": "Activate an enrolled device. Until this succeeds, MFA is not enforced at login.",
+                "summary": "Confirm an enrolled MFA device",
+                "tags": [
+                    "auth"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MfaCode"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MfaCode"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MfaCode"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MfaEnabled"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/mfa/disable/": {
+            "post": {
+                "operationId": "auth_mfa_disable_create",
+                "description": "Every session is revoked on the way out. Changing an account's authentication requirements is exactly when any session an attacker holds should stop working.",
+                "summary": "Disable MFA",
+                "tags": [
+                    "auth"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MfaCode"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MfaCode"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MfaCode"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No response body"
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/mfa/enroll/": {
+            "post": {
+                "operationId": "auth_mfa_enroll_create",
+                "description": "The only response that carries the TOTP secret. It is stored encrypted at rest (ADR-0027); this is the one moment it crosses the wire, because the user has to scan it. Enrollment does not enforce MFA — confirmation does.",
+                "summary": "Begin MFA enrollment",
+                "tags": [
+                    "auth"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MfaEnrollResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/register/": {
+            "post": {
+                "operationId": "auth_register_create",
+                "description": "Returns the new user, never a token — registration is not a login.",
+                "summary": "Create an account",
+                "tags": [
+                    "auth"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Register"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Register"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Register"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {}
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/User"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/token/": {
+            "post": {
+                "operationId": "auth_token_create",
+                "description": "Password step. Returns a token pair, or an MFA challenge (ADR-0012).\n\nThe serializer comes from ``SIMPLE_JWT[\"TOKEN_OBTAIN_SERIALIZER\"]``; this subclass exists only\nto carry the throttle scope. ``TokenViewBase`` already opts out of authentication and the\n``IsAuthenticated`` default.",
+                "tags": [
+                    "auth"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TokenObtainPairWithMFA"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TokenObtainPairWithMFA"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TokenObtainPairWithMFA"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TokenObtainPairWithMFA"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/token/mfa/": {
+            "post": {
+                "operationId": "auth_token_mfa_create",
+                "description": "Second step: spend the pre-auth token plus a TOTP code for a real token pair.",
+                "tags": [
+                    "auth"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MFAVerify"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MFAVerify"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MFAVerify"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MFAVerify"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/token/refresh/": {
+            "post": {
+                "operationId": "auth_token_refresh_create",
+                "description": "Rotate a refresh token. Reuse of a rotated token revokes the whole family (ADR-0013).",
+                "tags": [
+                    "auth"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SessionRefresh"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SessionRefresh"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SessionRefresh"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionRefresh"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/health/": {
+            "get": {
+                "operationId": "health_retrieve",
+                "description": "Liveness probe. Checks nothing, on purpose.\n\nIf this view runs at all, the process is alive and serving — which is the entire question. It\ndeliberately does not touch Postgres or Redis: a liveness probe that fails on a dependency\noutage asks the supervisor to restart a process that is working fine, turning a recoverable\noutage into a restart storm on top of one. Readiness is where dependencies belong.",
+                "summary": "Liveness probe",
+                "tags": [
+                    "health"
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Liveness"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/holdings/": {
+            "get": {
+                "operationId": "holdings_list",
+                "description": "``GET /api/v1/holdings/`` — every instrument the requester holds.\n\nAll of the arithmetic lives in :func:`trading.portfolio.holdings_for`, which the portfolio\nendpoint and the brokerage statement also call. Two implementations of \"what is this position\nworth\" is exactly the drift ADR-0016 built derived holdings to avoid.",
+                "summary": "Your holdings",
+                "tags": [
+                    "holdings"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Holding"
+                                    }
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/instruments/": {
+            "get": {
+                "operationId": "instruments_list",
+                "description": "List and retrieve tradeable instruments, looked up by symbol.\n\nThe symbol is the lookup key rather than the UUID PK: it is unique, stable, and the thing a\nhuman actually types. ADR-0005's non-enumerable-identifier reasoning does not apply here —\ninstruments are public reference data, and the whole list is one request away by design.",
+                "parameters": [
+                    {
+                        "name": "cursor",
+                        "required": false,
+                        "in": "query",
+                        "description": "The pagination cursor value.",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "tags": [
+                    "instruments"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedInstrumentList"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/instruments/{symbol}/": {
+            "get": {
+                "operationId": "instruments_retrieve",
+                "description": "List and retrieve tradeable instruments, looked up by symbol.\n\nThe symbol is the lookup key rather than the UUID PK: it is unique, stable, and the thing a\nhuman actually types. ADR-0005's non-enumerable-identifier reasoning does not apply here —\ninstruments are public reference data, and the whole list is one request away by design.",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "symbol",
+                        "schema": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9.-]+$"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "instruments"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Instrument"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/instruments/{symbol}/prices/": {
+            "get": {
+                "operationId": "instruments_prices_list",
+                "description": "``GET /api/v1/instruments/{symbol}/prices/`` — tick history, newest first.",
+                "parameters": [
+                    {
+                        "name": "cursor",
+                        "required": false,
+                        "in": "query",
+                        "description": "The pagination cursor value.",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "path",
+                        "name": "symbol",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "instruments"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedPriceTickList"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/orders/": {
+            "get": {
+                "operationId": "orders_list",
+                "description": "Cursor-paginated, newest first.\n\nUnbounded until Week 7: this returned every order the user had ever placed, in one response,\ngrowing forever. It was the endpoint most likely to be the first to time out.",
+                "summary": "List your orders, newest first",
+                "tags": [
+                    "orders"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Order"
+                                    }
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            },
+            "post": {
+                "operationId": "orders_create",
+                "description": "A market order returns 201 already `filled`; a limit order returns 201 `open` and rests until the market crosses it. Both are 201 — `status`, not the HTTP code, is what says whether money moved.",
+                "summary": "Place an order",
+                "tags": [
+                    "orders"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/OrderCreate"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/OrderCreate"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/OrderCreate"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Order"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                },
+                                "examples": {
+                                    "InsufficientFunds": {
+                                        "value": {
+                                            "error": {
+                                                "code": "insufficient_funds",
+                                                "message": "Not enough funds.",
+                                                "details": {}
+                                            }
+                                        },
+                                        "summary": "insufficient_funds"
+                                    }
+                                }
+                            }
+                        },
+                        "description": "`insufficient_funds` — Not enough funds."
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                },
+                                "examples": {
+                                    "OrderKeyConflict": {
+                                        "value": {
+                                            "error": {
+                                                "code": "order_key_conflict",
+                                                "message": "Key already used.",
+                                                "details": {}
+                                            }
+                                        },
+                                        "summary": "order_key_conflict"
+                                    }
+                                }
+                            }
+                        },
+                        "description": "`order_key_conflict` — Key already used."
+                    }
+                }
+            }
+        },
+        "/api/v1/orders/{id}/": {
+            "get": {
+                "operationId": "orders_retrieve",
+                "description": "``GET /api/v1/orders/{id}/`` — one of the requester's own orders.",
+                "summary": "Retrieve one of your orders",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "orders"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Order"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/orders/{id}/cancel/": {
+            "post": {
+                "operationId": "orders_cancel_create",
+                "description": "``POST /api/v1/orders/{id}/cancel/`` — withdraw a resting order.",
+                "summary": "Cancel a resting order",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "orders"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Order"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                },
+                                "examples": {
+                                    "OrderNotOpen": {
+                                        "value": {
+                                            "error": {
+                                                "code": "order_not_open",
+                                                "message": "That order is no longer open.",
+                                                "details": {}
+                                            }
+                                        },
+                                        "summary": "order_not_open"
+                                    }
+                                }
+                            }
+                        },
+                        "description": "`order_not_open` — That order is no longer open."
+                    }
+                }
+            }
+        },
+        "/api/v1/portfolio/": {
+            "get": {
+                "operationId": "portfolio_retrieve",
+                "description": "``GET /api/v1/portfolio/`` — cash, holdings, and what the difference is worth (ADR-0020).\n\nEvery figure is derived from ledger rows at request time; the endpoint adds no state of its own\nand its correctness is therefore a property of the postings, not of anything it stores.",
+                "summary": "Cash, holdings and total value",
+                "tags": [
+                    "portfolio"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Portfolio"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/ready/": {
+            "get": {
+                "operationId": "ready_retrieve",
+                "description": "503 with a per-dependency breakdown when something it needs is unreachable.",
+                "summary": "Readiness probe",
+                "tags": [
+                    "ready"
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Readiness"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/statements/": {
+            "get": {
+                "operationId": "statements_list",
+                "description": "``GET /api/v1/statements/`` — the requester's statements, newest first.",
+                "parameters": [
+                    {
+                        "name": "cursor",
+                        "required": false,
+                        "in": "query",
+                        "description": "The pagination cursor value.",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "tags": [
+                    "statements"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedStatementList"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/statements/{id}/download/": {
+            "get": {
+                "operationId": "statements_download_retrieve",
+                "description": "Owner-scoped: another user's statement is a 404, not a 403, so the endpoint does not confirm that it exists. MEDIA_URL is deliberately unrouted, making this the only path to a generated file (ADR-0021).",
+                "summary": "Download a statement PDF",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "statements"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/pdf": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/transfers/": {
+            "post": {
+                "operationId": "transfers_create",
+                "description": "201 when the transfer posted, **200** when an idempotency key replayed one that had already posted — the status is how a client tells \"I made this happen\" from \"this had already happened\". A key reused for a *different* request is 409.",
+                "summary": "Move money between accounts",
+                "tags": [
+                    "transfers"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TransferCreate"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TransferCreate"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TransferCreate"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JournalEntry"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JournalEntry"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                },
+                                "examples": {
+                                    "InsufficientFunds": {
+                                        "value": {
+                                            "error": {
+                                                "code": "insufficient_funds",
+                                                "message": "Not enough funds.",
+                                                "details": {}
+                                            }
+                                        },
+                                        "summary": "insufficient_funds"
+                                    }
+                                }
+                            }
+                        },
+                        "description": "`insufficient_funds` — Not enough funds."
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                },
+                                "examples": {
+                                    "IdempotencyKeyConflict": {
+                                        "value": {
+                                            "error": {
+                                                "code": "idempotency_key_conflict",
+                                                "message": "Key already used.",
+                                                "details": {}
+                                            }
+                                        },
+                                        "summary": "idempotency_key_conflict"
+                                    }
+                                }
+                            }
+                        },
+                        "description": "`idempotency_key_conflict` — Key already used."
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Account": {
+                "type": "object",
+                "description": "An account with its derived balance.\n\n``balance`` is not a model field: it comes from the queryset annotation in ``AccountViewSet``,\nso a list of N accounts still costs one query. Declared explicitly (rather than left to\n``ModelSerializer`` inference) so the decimal places match the storage contract of ADR-0009 —\nand so it serializes as the string ``\"150.0000\"``, never a float.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "name": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "number": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "account_type": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/AccountTypeEnum"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "currency": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "balance": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "account_type",
+                    "balance",
+                    "created_at",
+                    "currency",
+                    "id",
+                    "name",
+                    "number"
+                ]
+            },
+            "AccountDetail": {
+                "type": "object",
+                "description": "One account, with its account number in full.\n\nThe only place the number is decrypted. Retrieving a single owned account is the one request\nwhere a customer genuinely needs the digits — to quote them to somebody — and confining the\ndecryption to it means a leak of the list endpoint leaks four digits rather than all ten.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "name": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "number": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "account_type": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/AccountTypeEnum"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "currency": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "balance": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "account_type",
+                    "balance",
+                    "created_at",
+                    "currency",
+                    "id",
+                    "name",
+                    "number"
+                ]
+            },
+            "AccountTypeEnum": {
+                "enum": [
+                    "asset",
+                    "liability",
+                    "equity",
+                    "income",
+                    "expense"
+                ],
+                "type": "string",
+                "description": "* `asset` - Asset\n* `liability` - Liability\n* `equity` - Equity\n* `income` - Income\n* `expense` - Expense"
+            },
+            "ErrorBody": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Machine-readable code clients branch on."
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "details": {
+                        "type": "object",
+                        "additionalProperties": {}
+                    }
+                },
+                "required": [
+                    "code",
+                    "message"
+                ]
+            },
+            "ErrorEnvelope": {
+                "type": "object",
+                "description": "The ADR-0006 error envelope, as one reusable schema component.\n\nOne class rather than an ``inline_serializer`` per call site, and the reason is concrete:\ninline serializers mint a new class each time, so fifteen call sites produce fifteen components\nwith the same name and spectacular resolves the collision by guessing. An error shape documented\nfifteen slightly different ways is a shape no client can rely on.",
+                "properties": {
+                    "error": {
+                        "$ref": "#/components/schemas/ErrorBody"
+                    }
+                },
+                "required": [
+                    "error"
+                ]
+            },
+            "Holding": {
+                "type": "object",
+                "description": "One position: how much is held, what it cost, and what it is worth now.\n\nEvery field is derived — quantity and cost basis are sums over the ledger, average cost, market\nvalue and unrealized P&L are arithmetic on top (ADR-0016, ADR-0020). Nothing here is stored, so\nnothing can drift. Reads a :class:`~trading.portfolio.Holding`, whose ``instrument`` is already\n``select_related``, so ``symbol`` and ``name`` cost no extra query.",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "name": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "account_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "quantity": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,12}(?:\\.\\d{0,8})?$",
+                        "readOnly": true
+                    },
+                    "cost_basis": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "average_cost": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "last_price": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "market_value": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "unrealized_pnl": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "account_id",
+                    "average_cost",
+                    "cost_basis",
+                    "last_price",
+                    "market_value",
+                    "name",
+                    "quantity",
+                    "symbol",
+                    "unrealized_pnl"
+                ]
+            },
+            "Instrument": {
+                "type": "object",
+                "description": "A tradeable symbol and its latest price.\n\n``drift`` and ``volatility`` are deliberately absent: they are simulation parameters, and\npublishing them would tell a client exactly how the \"market\" it is trading against behaves.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "name": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "sector": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "currency": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "is_active": {
+                        "type": "boolean",
+                        "readOnly": true
+                    },
+                    "last_price": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "last_tick_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "nullable": true
+                    }
+                },
+                "required": [
+                    "currency",
+                    "id",
+                    "is_active",
+                    "last_price",
+                    "last_tick_at",
+                    "name",
+                    "sector",
+                    "symbol"
+                ]
+            },
+            "JournalEntry": {
+                "type": "object",
+                "description": "An entry with its lines — the shape a posted transfer returns.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "description": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "readOnly": true,
+                        "nullable": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    },
+                    "lines": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/JournalLine"
+                        },
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "created_at",
+                    "description",
+                    "id",
+                    "idempotency_key",
+                    "lines"
+                ]
+            },
+            "JournalLine": {
+                "type": "object",
+                "description": "One signed leg: ``amount`` is negative leaving the account, positive arriving.\n\n``quantity`` is null on a money line and the signed share count on a line touching an\ninstrument account. It was omitted until Week 7, which meant a fill's share movement was\ninvisible in transaction history — harmless while position accounts were unreachable through\nthe API, and a silent hole the moment one became reachable.",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "entry_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "account_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "amount": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "quantity": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,12}(?:\\.\\d{0,8})?$",
+                        "readOnly": true,
+                        "nullable": true
+                    },
+                    "currency": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "description": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "account_id",
+                    "amount",
+                    "created_at",
+                    "currency",
+                    "description",
+                    "entry_id",
+                    "id",
+                    "quantity"
+                ]
+            },
+            "KindEnum": {
+                "enum": [
+                    "cash",
+                    "brokerage"
+                ],
+                "type": "string",
+                "description": "* `cash` - Cash account\n* `brokerage` - Brokerage"
+            },
+            "Liveness": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "status"
+                ]
+            },
+            "Logout": {
+                "type": "object",
+                "description": "Blacklist the presented refresh token and revoke the session behind it.\n\nStock ``TokenBlacklistView`` only does the first half, which leaves every access token from\nthat login valid for up to its full lifetime. Revoking the session is what actually logs the\nuser out.",
+                "properties": {
+                    "refresh": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refresh"
+                ]
+            },
+            "MFAVerify": {
+                "type": "object",
+                "description": "Second step: spend the pre-auth token plus a TOTP code for a real token pair.",
+                "properties": {
+                    "mfa_token": {
+                        "type": "string"
+                    },
+                    "code": {
+                        "type": "string",
+                        "maxLength": 6,
+                        "minLength": 6
+                    }
+                },
+                "required": [
+                    "code",
+                    "mfa_token"
+                ]
+            },
+            "MfaCode": {
+                "type": "object",
+                "description": "A bare 6-digit TOTP code, for confirming or disabling a device.",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "maxLength": 6,
+                        "minLength": 6
+                    }
+                },
+                "required": [
+                    "code"
+                ]
+            },
+            "MfaEnabled": {
+                "type": "object",
+                "properties": {
+                    "mfa_enabled": {
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "mfa_enabled"
+                ]
+            },
+            "MfaEnrollResponse": {
+                "type": "object",
+                "description": "The one and only time the secret crosses the wire.",
+                "properties": {
+                    "secret": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "otpauth_uri": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "qr_svg": {
+                        "type": "string",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "otpauth_uri",
+                    "qr_svg",
+                    "secret"
+                ]
+            },
+            "Order": {
+                "type": "object",
+                "description": "An order and its outcome.\n\n``entry_id`` is the posting it produced, or null if it never filled.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "side": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/SideEnum"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "order_type": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/OrderTypeEnum"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "status": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/StatusEnum"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "quantity": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,12}(?:\\.\\d{0,8})?$",
+                        "readOnly": true
+                    },
+                    "limit_price": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "filled_quantity": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,12}(?:\\.\\d{0,8})?$",
+                        "readOnly": true
+                    },
+                    "filled_price": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "entry_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "nullable": true,
+                        "readOnly": true
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "readOnly": true,
+                        "nullable": true
+                    },
+                    "reject_reason": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    },
+                    "resolved_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "nullable": true
+                    }
+                },
+                "required": [
+                    "created_at",
+                    "entry_id",
+                    "filled_price",
+                    "filled_quantity",
+                    "id",
+                    "idempotency_key",
+                    "limit_price",
+                    "order_type",
+                    "quantity",
+                    "reject_reason",
+                    "resolved_at",
+                    "side",
+                    "status",
+                    "symbol"
+                ]
+            },
+            "OrderCreate": {
+                "type": "object",
+                "description": "The order request body.\n\nShape only — whether the instrument is tradeable, whether the account is yours, and whether you\ncan afford it are the view's and the service's business, exactly as with transfers.",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "maxLength": 10
+                    },
+                    "cash_account": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "side": {
+                        "$ref": "#/components/schemas/SideEnum"
+                    },
+                    "order_type": {
+                        "$ref": "#/components/schemas/OrderTypeEnum"
+                    },
+                    "quantity": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,12}(?:\\.\\d{0,8})?$"
+                    },
+                    "limit_price": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "nullable": true
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "nullable": true,
+                        "maxLength": 64
+                    }
+                },
+                "required": [
+                    "cash_account",
+                    "order_type",
+                    "quantity",
+                    "side",
+                    "symbol"
+                ]
+            },
+            "OrderTypeEnum": {
+                "enum": [
+                    "market",
+                    "limit"
+                ],
+                "type": "string",
+                "description": "* `market` - Market\n* `limit` - Limit"
+            },
+            "PaginatedAccountList": {
+                "type": "object",
+                "required": [
+                    "results"
+                ],
+                "properties": {
+                    "next": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cD00ODY%3D\""
+                    },
+                    "previous": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cj0xJnA9NDg3"
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Account"
+                        }
+                    }
+                }
+            },
+            "PaginatedInstrumentList": {
+                "type": "object",
+                "required": [
+                    "results"
+                ],
+                "properties": {
+                    "next": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cD00ODY%3D\""
+                    },
+                    "previous": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cj0xJnA9NDg3"
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Instrument"
+                        }
+                    }
+                }
+            },
+            "PaginatedJournalLineList": {
+                "type": "object",
+                "required": [
+                    "results"
+                ],
+                "properties": {
+                    "next": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cD00ODY%3D\""
+                    },
+                    "previous": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cj0xJnA9NDg3"
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/JournalLine"
+                        }
+                    }
+                }
+            },
+            "PaginatedPriceTickList": {
+                "type": "object",
+                "required": [
+                    "results"
+                ],
+                "properties": {
+                    "next": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cD00ODY%3D\""
+                    },
+                    "previous": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cj0xJnA9NDg3"
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PriceTick"
+                        }
+                    }
+                }
+            },
+            "PaginatedStatementList": {
+                "type": "object",
+                "required": [
+                    "results"
+                ],
+                "properties": {
+                    "next": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cD00ODY%3D\""
+                    },
+                    "previous": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?cursor=cj0xJnA9NDg3"
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Statement"
+                        }
+                    }
+                }
+            },
+            "Portfolio": {
+                "type": "object",
+                "description": "Everything the user owns, valued (ADR-0020).\n\n``cash`` is asset cash accounts only; ``realized_pnl`` is reported in the sign a human expects,\nwhich is the negation of the income account's ledger balance. Both decisions live in\n:mod:`trading.portfolio` — this is the projection, not the arithmetic.",
+                "properties": {
+                    "cash": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "holdings_value": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "cost_basis": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "unrealized_pnl": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "realized_pnl": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "total_value": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "positions": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Holding"
+                        },
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "cash",
+                    "cost_basis",
+                    "holdings_value",
+                    "positions",
+                    "realized_pnl",
+                    "total_value",
+                    "unrealized_pnl"
+                ]
+            },
+            "PriceTick": {
+                "type": "object",
+                "description": "One point on a price series — the shape Week 7's chart consumes.",
+                "properties": {
+                    "price": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "created_at",
+                    "price"
+                ]
+            },
+            "Readiness": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string"
+                    },
+                    "checks": {
+                        "type": "object",
+                        "additionalProperties": {}
+                    }
+                },
+                "required": [
+                    "checks",
+                    "status"
+                ]
+            },
+            "Register": {
+                "type": "object",
+                "description": "Create a user with a validated, hashed password.\n\n``email`` is required and enforced unique case-insensitively here rather than on the model:\n``django.contrib.auth.models.User.email`` carries no unique constraint, and ADR-0011 rules out\nswapping the user model to add one. Registration is the only path that creates users, so this\nis where the invariant belongs.",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "username": {
+                        "type": "string",
+                        "description": "Required. 150 characters or fewer. Letters, digits and @/./+/-/_ only.",
+                        "pattern": "^[\\w.@+-]+$",
+                        "maxLength": 150
+                    },
+                    "email": {
+                        "type": "string",
+                        "format": "email"
+                    },
+                    "password": {
+                        "type": "string",
+                        "writeOnly": true
+                    }
+                },
+                "required": [
+                    "email",
+                    "id",
+                    "password",
+                    "username"
+                ]
+            },
+            "SessionRefresh": {
+                "type": "object",
+                "description": "Rotate a refresh token, detecting reuse and refusing revoked sessions (ADR-0013).",
+                "properties": {
+                    "refresh": {
+                        "type": "string"
+                    },
+                    "access": {
+                        "type": "string",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "access",
+                    "refresh"
+                ]
+            },
+            "SideEnum": {
+                "enum": [
+                    "buy",
+                    "sell"
+                ],
+                "type": "string",
+                "description": "* `buy` - Buy\n* `sell` - Sell"
+            },
+            "Statement": {
+                "type": "object",
+                "description": "One generated statement.\n\nThe file itself is deliberately absent: a URL here would be a second way to reach the bytes,\nand the download view's ownership check is meant to be the only one (ADR-0021). ``download_url``\nis the route, not the storage path.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "kind": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/KindEnum"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "period": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "period_start": {
+                        "type": "string",
+                        "format": "date",
+                        "readOnly": true
+                    },
+                    "period_end": {
+                        "type": "string",
+                        "format": "date",
+                        "readOnly": true
+                    },
+                    "account_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "nullable": true,
+                        "readOnly": true
+                    },
+                    "symbol_scope": {
+                        "type": "string",
+                        "description": "What the statement covers, in one phrase a client can render as a title.",
+                        "readOnly": true
+                    },
+                    "opening_balance": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "closing_balance": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$",
+                        "readOnly": true
+                    },
+                    "line_count": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "download_url": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "generated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "account_id",
+                    "closing_balance",
+                    "download_url",
+                    "generated_at",
+                    "id",
+                    "kind",
+                    "line_count",
+                    "opening_balance",
+                    "period",
+                    "period_end",
+                    "period_start",
+                    "symbol_scope"
+                ]
+            },
+            "StatusEnum": {
+                "enum": [
+                    "open",
+                    "filled",
+                    "cancelled",
+                    "rejected"
+                ],
+                "type": "string",
+                "description": "* `open` - Open\n* `filled` - Filled\n* `cancelled` - Cancelled\n* `rejected` - Rejected"
+            },
+            "TokenObtainPairWithMFA": {
+                "type": "object",
+                "description": "Password step of the login. Returns a token pair, or an MFA challenge (ADR-0012).\n\nThe challenge branch is why this returns 200 rather than 401: the credentials *were* correct,\nthe flow simply is not finished. A 401 would force clients to tell \"wrong password\" from \"need\na code\" by parsing an error code, and would trip the generic SPA interceptor that redirects to\nlogin on any 401.",
+                "properties": {
+                    "username": {
+                        "type": "string",
+                        "writeOnly": true
+                    },
+                    "password": {
+                        "type": "string",
+                        "writeOnly": true
+                    }
+                },
+                "required": [
+                    "password",
+                    "username"
+                ]
+            },
+            "TransferCreate": {
+                "type": "object",
+                "description": "The transfer request body.\n\nShape only — ownership, existence, and funds are the view's and the service's business.\n``min_value`` rejects zero and negatives here so the common case fails as a per-field\nvalidation error rather than a domain exception.",
+                "properties": {
+                    "source_account": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "destination_account": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "amount": {
+                        "type": "string",
+                        "format": "decimal",
+                        "pattern": "^-?\\d{0,16}(?:\\.\\d{0,4})?$"
+                    },
+                    "description": {
+                        "type": "string",
+                        "default": "Transfer",
+                        "maxLength": 255
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "nullable": true,
+                        "maxLength": 64
+                    }
+                },
+                "required": [
+                    "amount",
+                    "destination_account",
+                    "source_account"
+                ]
+            },
+            "User": {
+                "type": "object",
+                "description": "The requesting user's own profile. Never used to expose *another* user.",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "username": {
+                        "type": "string",
+                        "readOnly": true,
+                        "description": "Required. 150 characters or fewer. Letters, digits and @/./+/-/_ only."
+                    },
+                    "email": {
+                        "type": "string",
+                        "format": "email",
+                        "readOnly": true,
+                        "title": "Email address"
+                    },
+                    "mfa_enabled": {
+                        "type": "boolean",
+                        "description": "True once a TOTP device has been confirmed — enrolled-but-unconfirmed does not count.",
+                        "readOnly": true
+                    },
+                    "date_joined": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "date_joined",
+                    "email",
+                    "id",
+                    "mfa_enabled",
+                    "username"
+                ]
+            }
+        },
+        "securitySchemes": {
+            "jwtAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "Access token from `POST /api/v1/auth/token/`. Tokens are bound to a revocable session, so logging out invalidates the access token immediately rather than waiting for it to expire."
+            }
+        }
+    }
+}
