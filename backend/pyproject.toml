@@ -26,6 +26,15 @@ dependencies = [
     # Monthly statement PDFs (ADR-0021). Pure Python, no system libraries — which is why it is
     # ReportLab and not a wkhtmltopdf/WeasyPrint pipeline that Week 8's image would have to carry.
     "reportlab>=4.2",
+    # Envelope encryption for sensitive columns (ADR-0027). AES-GCM comes from here rather than
+    # from a Django field library so the key-management seam is ours and a KMS can slot in behind
+    # it without changing a model.
+    "cryptography>=44.0",
+    # OpenAPI schema (ADR-0028). The only API documentation before Week 7 was a hand-maintained
+    # table in the README, which had already drifted — it did not mention that GET /orders/ was
+    # unpaginated, or the ?q= parameter on /instruments/. A generated schema cannot drift, and it is
+    # what Week 9's typed client is generated from.
+    "drf-spectacular>=0.28",
 ]
 
 [dependency-groups]
@@ -60,12 +69,69 @@ select = [
     "B",   # bugbear
     "C4",  # comprehensions
     "DJ",  # django
-    "SIM", # simplify
+    "SIM",   # simplify
+    "TID",   # tidy imports — carries the post_entry fence below
+    # Added in Week 7. The first three `noqa: S105` / `noqa: BLE001` comments in this codebase were
+    # written for rules that were never enabled, so the suppressions were decoration and the scanning
+    # they implied did not exist. RUF100 is what stops that recurring: it flags a `noqa` for a rule
+    # that is not on.
+    "S",     # flake8-bandit — security
+    "ASYNC", # blocking calls in async code; realtime/ is 428 lines of it
+    "PT",    # pytest style, across ~7,000 lines of tests
+    "RUF",   # includes RUF100, unused-noqa
+    # These two were already suppressed at a call site before they were ever enabled — the `noqa`
+    # comments in realtime/events.py and statements/services.py were written defensively against
+    # rules that were not running. Turning them on makes those suppressions mean something.
+    "BLE",   # blind except
+    "DTZ",   # naive datetimes, in a system whose periods are all UTC
 ]
+ignore = [
+    # Django's own idiom. `Meta.constraints`, `Meta.indexes`, `dependencies` and DRF's
+    # `permission_classes` are all mutable class attributes by framework design; annotating 80 of
+    # them with ClassVar to satisfy a rule aimed at dataclasses would be noise, not safety.
+    "RUF012",
+    # This codebase writes prose. Em dashes, ×, − and • are deliberate in comments, docstrings and
+    # the account-number mask, and flagging them as "ambiguous unicode" is a rule for source that is
+    # meant to be ASCII.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# ADR-0026. post_entry can drive a balance negative without the lock-first protocol and bypasses
+# the audit call in transfer(), so ADR-0010's overdraft guarantee holds only among callers that
+# follow the protocol. That stays a convention — the honest reasons a trigger cannot replace it are
+# in ledger/reconciliation.py — but a new call site should now be a deliberate act rather than an
+# import away.
+#
+# Its limits, stated plainly: this matches the *imported path*, so `from ledger import services;
+# services.post_entry(...)` walks straight through, and the sanctioned callers below are exempt by
+# file. It is a speed bump that makes a violation require a visible `# noqa`. It is not enforcement.
+"ledger.services.post_entry".msg = "Post through transfer() or trading.services; see ADR-0026."
 
 [tool.ruff.lint.per-file-ignores]
 # Settings modules compose via star imports by design (ADR-0004).
 "config/settings/*" = ["F401", "F403", "F405"]
+# The sanctioned writers: the ledger's own service and management command, the trading service that
+# posts fills, and the test factories that arrange ledger state.
+"ledger/services.py" = ["TID251"]
+"ledger/management/commands/post_demo_entries.py" = ["TID251"]
+"trading/services.py" = ["TID251"]
+"tests/*" = [
+    "TID251",
+    # `assert` *is* the test framework here. S101 exists for production code, where an assert can be
+    # stripped by -O; pytest rewrites these and they are the entire point of the file.
+    "S101",
+    # Test fixtures contain literal passwords and tokens on purpose. They are published in this
+    # repository, which is exactly why they cannot be credentials.
+    "S105",
+    "S106",
+    # `pytest.raises` blocks here deliberately wrap several statements: the ADR-0025 trigger tests
+    # need two INSERTs plus a SET CONSTRAINTS inside one block, because the violation only exists
+    # once the pair is present.
+    "PT012",
+]
 
 [tool.mypy]
 python_version = "3.12"
@@ -77,6 +143,10 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_unreachable = true
+# get_balance and get_quantity return `result["balance"]` out of an .aggregate() dict — i.e. Any. The
+# money contract (ADR-0009) was unenforced by the type checker at exactly the two functions that
+# produce every balance in the system.
+warn_return_any = true
 
 [[tool.mypy.overrides]]
 module = ["*.migrations.*"]
@@ -101,7 +171,7 @@ django_settings_module = "config.settings.dev"
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -ra --strict-markers --strict-config --durations=10"
 # WebSocket tests drive an async consumer through Channels' communicator; every other test in the
 # suite stays synchronous, so async tests are opted in with a marker rather than auto-detected.
 asyncio_mode = "strict"
@@ -109,4 +179,38 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["."]
-omit = ["manage.py", "*/migrations/*", "config/asgi.py", "config/wsgi.py"]
+branch = true
+omit = [
+    "manage.py",
+    "*/migrations/*",
+    "config/asgi.py",
+    "config/wsgi.py",
+    # Selected by DJANGO_SETTINGS_MODULE, and the suite is pinned to config.settings.test — so this
+    # module is structurally unreachable from a test, exactly like asgi/wsgi above. It is covered
+    # instead by `manage.py check --deploy` in CI, which is the check that actually means something
+    # for a settings file.
+    "config/settings/prod.py",
+    # The suite measured itself until Week 7. 6,700 lines of test code are ~100% covered by
+    # construction, so including them inflated the headline number and hid the app's real figure.
+    "tests/*",
+]
+
+[tool.coverage.report]
+# The gate. Before Week 7 `pytest --cov` printed a number and exited 0 no matter what it was, so
+# "99% coverage" was an assertion in a commit message rather than a property of the build.
+#
+# 96, not 99. The old figure measured the test suite along with the app — 6,700 lines that are ~100%
+# covered by construction — and it counted statements only. Measuring app code with branch coverage
+# gives 97%, and the floor sits one point under so an honest small dip is not a blocked merge while
+# a real regression is. The remaining gap is admin display helpers and the demo command, deliberately
+# not chased since Week 3.
+fail_under = 96
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    # Protocol bodies: the ellipsis is the definition, there is nothing to execute.
+    "^\\s*\\.\\.\\.$",
+]
