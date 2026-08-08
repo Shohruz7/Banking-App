@@ -88,7 +88,8 @@ refresh, transfers and orders each have their own ceiling.
 | Async   | Celery + Beat (price ticks, limit-order matching, statements) |
 | Realtime| Django Channels over a Redis channel layer (daphne/ASGI)     |
 | Reports | ReportLab PDF statements behind Django's storage API         |
-| Tooling | uv (env + lockfile) · ruff (lint + format) · mypy · pytest   |
+| Client  | React 19 · TypeScript · Vite · TanStack Query · Tailwind v4  |
+| Tooling | uv · ruff · mypy · pytest — npm · eslint · tsc · vitest      |
 
 ## Quickstart
 
@@ -106,6 +107,17 @@ uv run python manage.py runserver
 ```
 
 Then: `curl http://localhost:8000/api/v1/health/` → `{"status": "ok"}`
+
+Then the client, from `frontend/`:
+
+```sh
+npm ci
+npm run dev                 # http://localhost:5173
+```
+
+Registering opens a funded Checking and an empty Savings, so there is something to move on the
+first visit. The dev server proxies `/api` and `/ws` to `:8000`, which is why the browser never
+makes a cross-origin request and the backend carries no CORS dependency (ADR-0030).
 
 The market only moves while Celery is running — two more terminals, from `backend/`:
 
@@ -233,7 +245,12 @@ backend/
   realtime/   the WebSocket consumer, socket auth, and the event publishers
   common/     money, pagination, error envelope, shared helpers
   tests/
-frontend/     web client (not yet implemented)
+frontend/
+  src/api/       fetch client, refresh dedupe, hooks, types generated from the schema
+  src/auth/      token storage and the two-step login
+  src/realtime/  the WebSocket client and its mapping onto the query cache
+  src/routes/    the screens
+  src/money.ts   the decimal-string contract, on this side of the wire
 ```
 
 ## Architecture decisions
