@@ -16,19 +16,29 @@ this one.
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import cast
+from uuid import UUID
 
 from django.contrib.auth.models import User
 from django.db import IntegrityError, transaction
 from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 
-from accounts.models import Account
+from accounts.models import Account, AccountType
 from audit.models import AuditAction
 from audit.services import record_audit
 from common.money import quantize_money, quantize_shares
+from markets.models import Instrument
 from realtime import events
 
-from .exceptions import InsufficientFundsError, InvalidEntryError, UnbalancedEntryError
+from .exceptions import (
+    IdempotencyKeyConflictError,
+    InsufficientFundsError,
+    InvalidEntryError,
+    UnbalancedEntryError,
+    UnbalancedSharesError,
+)
+from .fingerprints import transfer_fingerprint
 from .models import JournalEntry, JournalLine
 
 _ZERO = Decimal("0.0000")
@@ -53,6 +63,7 @@ def post_entry(
     description: str,
     lines: Sequence[LineSpec],
     idempotency_key: str | None = None,
+    payload_fingerprint: str | None = None,
 ) -> JournalEntry:
     """Post a balanced journal entry atomically, or raise without persisting anything.
 
@@ -69,25 +80,36 @@ def post_entry(
     ``idempotency_key`` is stored as-is and is unique when present (ADR-0010); a duplicate raises
     ``IntegrityError`` from the database. Callers that want replay semantics should use
     :func:`transfer`, which handles that race.
+
+    ``payload_fingerprint`` is the digest of the request the key came from (ADR-0024), and a CHECK
+    constraint requires one wherever a key is present. This service stores what it is given and
+    compares nothing: deciding whether two requests are *the same* request needs the caller's
+    payload, which by the time lines have been built is no longer recoverable — a sell's cost basis
+    depends on the holding, so identical requests a minute apart produce different lines.
     """
+    if idempotency_key is not None and payload_fingerprint is None:
+        raise InvalidEntryError("An idempotency key requires a payload fingerprint (ADR-0024).")
     if len(lines) < 2:
         raise InvalidEntryError("A journal entry needs at least two lines to balance.")
 
     amounts = [quantize_money(line.amount) for line in lines]
+    quantities = [
+        None if line.quantity is None else quantize_shares(line.quantity) for line in lines
+    ]
 
-    for amount in amounts:
-        if amount == _ZERO:
-            raise InvalidEntryError("Journal lines must have a non-zero amount.")
+    # A line must move money, shares, or both — the service half of the CHECK on JournalLine
+    # (ADR-0025). Loosened from "every amount is non-zero" to admit the shares-outstanding contra,
+    # whose whole job is to move shares at no cost. A line that moves neither is still refused, and
+    # that is the case worth refusing: it is a row that does nothing.
+    for amount, quantity in zip(amounts, quantities, strict=True):
+        if amount == _ZERO and quantity is None:
+            raise InvalidEntryError("Journal lines must move a non-zero amount or a quantity.")
 
     for line in lines:
         if line.account.currency != "USD":
             raise InvalidEntryError(
                 f"Account {line.account.id} is {line.account.currency}; only USD is supported."
             )
-
-    quantities = [
-        None if line.quantity is None else quantize_shares(line.quantity) for line in lines
-    ]
 
     for line, quantity in zip(lines, quantities, strict=True):
         if line.account.is_position and quantity is None:
@@ -107,9 +129,27 @@ def post_entry(
     if total != _ZERO:
         raise UnbalancedEntryError(f"Entry lines must sum to zero; got {total}.")
 
+    # Shares are conserved per instrument (ADR-0025), the same way amounts are conserved overall.
+    # The deferred trigger enforces this too; checking here is not redundant, it is what turns "the
+    # commit blew up somewhere" into a domain error naming the instrument, raised from the frame
+    # that built the lines. Every caller that omits a contra leg finds out here instead.
+    moved: dict[UUID | None, Decimal] = {}
+    for line, quantity in zip(lines, quantities, strict=True):
+        if quantity is None:
+            continue
+        instrument_id = line.account.instrument_id
+        moved[instrument_id] = moved.get(instrument_id, _ZERO_SHARES) + quantity
+    for instrument_id, net in moved.items():
+        if net != _ZERO_SHARES:
+            raise UnbalancedSharesError(
+                f"Entry does not conserve shares of instrument {instrument_id}: net {net}."
+            )
+
     with transaction.atomic():
         entry = JournalEntry.objects.create(
-            description=description, idempotency_key=idempotency_key
+            description=description,
+            idempotency_key=idempotency_key,
+            payload_fingerprint=payload_fingerprint,
         )
         JournalLine.objects.bulk_create(
             [
@@ -124,6 +164,83 @@ def post_entry(
             ]
         )
     return entry
+
+
+#: The system user that owns every shares-outstanding contra account (ADR-0025). One row, created
+#: by migration, `PROTECT`-ed and therefore undeletable — which is correct: the accounts hanging off
+#: it are half of the ledger's share invariant.
+SYSTEM_USERNAME = "system"
+
+
+#: Name of an instrument's contra account. One per instrument, not one per holder.
+def contra_account_name(symbol: str) -> str:
+    return f"{symbol} shares outstanding"
+
+
+def share_contra_for(instrument: "Instrument") -> Account:
+    """The shares-outstanding account for an instrument, created on first use (ADR-0025).
+
+    Lazily, exactly like ``position_account_for``: an instrument nobody has ever traded does not
+    need one, and the partial unique index on ``(owner, instrument)`` settles the race if two first
+    fills arrive together.
+    """
+    system_user, _ = User.objects.get_or_create(
+        username=SYSTEM_USERNAME,
+        defaults={"is_active": False, "email": ""},
+    )
+    account, _ = Account.objects.get_or_create(
+        owner=system_user,
+        instrument=instrument,
+        account_type=AccountType.EQUITY,
+        defaults={"name": contra_account_name(instrument.symbol)},
+    )
+    return account
+
+
+def conserve_shares(lines: Sequence[LineSpec]) -> list[LineSpec]:
+    """Append the contra legs that make an entry's share movements net to zero (ADR-0025).
+
+    Every share that enters a holding comes from somewhere, and this is the "somewhere": a per
+    instrument equity account standing in for the market. With it, ``SUM(quantity) GROUP BY
+    instrument`` over an entry is zero, and Postgres can check that at COMMIT the way it already
+    checks amounts.
+
+    The contra leg carries ``amount=0``. That is not a placeholder — a share arriving in a holding
+    has a cost, and the *cash* leg already paid it. A second amount here would double-count money.
+
+    Quantities are quantized before being netted, matching what ``post_entry`` will store. Netting
+    the raw values would leave a contra off by the rounding, and an entry that misses by 1e-12 of a
+    share is refused exactly as firmly as one that misses by a hundred.
+
+    Called by the fill builders rather than by ``post_entry``, deliberately. ``post_entry`` posting
+    lines it was not handed — and doing a ``get_or_create`` account write from inside the ledger
+    core — would break the "validate what you were given, invent nothing" contract that makes it
+    reviewable. The cost of that choice is that a caller can forget; the per-instrument check in
+    ``post_entry`` is what makes forgetting loud instead of silent.
+    """
+    moved: dict[UUID, Decimal] = {}
+    for line in lines:
+        # `positions()` semantics, asked of one row: a holding, not its contra. Wrapping an entry
+        # that already has contra legs must not add a second set.
+        if line.quantity is None or line.account.account_type != AccountType.ASSET:
+            continue
+        instrument_id = line.account.instrument_id
+        if instrument_id is None:
+            continue
+        moved[instrument_id] = moved.get(instrument_id, _ZERO_SHARES) + quantize_shares(
+            line.quantity
+        )
+
+    # One query for every instrument involved, rather than a lazy FK fetch per line.
+    instruments = Instrument.objects.in_bulk(moved.keys())
+    return [
+        *lines,
+        *(
+            LineSpec(account=share_contra_for(instruments[pk]), amount=_ZERO, quantity=-net)
+            for pk, net in moved.items()
+            if net != _ZERO_SHARES
+        ),
+    ]
 
 
 def transfer(
@@ -158,9 +275,15 @@ def transfer(
     if source.pk == destination.pk:
         raise InvalidEntryError("Source and destination must be different accounts.")
 
+    digest = (
+        None
+        if idempotency_key is None
+        else transfer_fingerprint(source_id=source.pk, destination_id=destination.pk, amount=amount)
+    )
+
     # Cheap replay check: a settled retry needs no locks at all.
     if idempotency_key is not None:
-        replayed = _entry_for_key(idempotency_key)
+        replayed = _replayed_entry(idempotency_key, digest)
         if replayed is not None:
             _audit_replay(replayed, actor, idempotency_key)
             return replayed, False
@@ -171,7 +294,7 @@ def transfer(
 
             # Re-check under the lock: a concurrent first attempt may have committed since above.
             if idempotency_key is not None:
-                replayed = _entry_for_key(idempotency_key)
+                replayed = _replayed_entry(idempotency_key, digest)
                 if replayed is not None:
                     _audit_replay(replayed, actor, idempotency_key)
                     return replayed, False
@@ -189,6 +312,7 @@ def transfer(
                     LineSpec(account=destination, amount=amount),
                 ],
                 idempotency_key=idempotency_key,
+                payload_fingerprint=digest,
             )
             record_audit(
                 action=AuditAction.TRANSFER_POSTED,
@@ -208,9 +332,14 @@ def transfer(
         # Two first attempts with the same key raced past the checks above and the unique
         # constraint settled it. Recover *outside* the atomic block — inside a failed transaction
         # every query would raise TransactionManagementError.
+        #
+        # This is the third and last place a key is resolved, and the one most easily forgotten:
+        # it is only reachable under a race, so a missing fingerprint check here would pass every
+        # single-threaded test. That is why the comparison lives inside _replayed_entry rather than
+        # beside each call — the loser of the race gets the same 409 the sequential path gives.
         if idempotency_key is None:
             raise
-        replayed = _entry_for_key(idempotency_key)
+        replayed = _replayed_entry(idempotency_key, digest)
         if replayed is None:
             raise
         _audit_replay(replayed, actor, idempotency_key)
@@ -272,8 +401,32 @@ def lock_accounts(*accounts: Account) -> None:
         Account.objects.select_for_update().get(pk=pk)
 
 
-def _entry_for_key(idempotency_key: str) -> JournalEntry | None:
-    return JournalEntry.objects.filter(idempotency_key=idempotency_key).first()
+def _replayed_entry(idempotency_key: str, payload_fingerprint: str | None) -> JournalEntry | None:
+    """The entry this key already posted, or ``None`` — raising if the key belongs elsewhere.
+
+    Resolving a key and deciding whether it *may* be replayed are one operation, in one function, on
+    purpose (ADR-0024). ``transfer`` reaches this from three places — before the lock, under the
+    lock, and in the ``IntegrityError`` handler — and a comparison written beside each call is a
+    comparison that will eventually be missing from one of them. The one that would be missed is the
+    race handler, which no sequential test reaches.
+
+    The mismatch is a hard error rather than "post a second entry", because a key that already
+    identifies a different movement cannot be honoured either way: replaying returns money that went
+    somewhere else, and posting again defeats the point of the key.
+
+    This is also the whole of the ownership check. ``JournalEntry`` has no owner column and
+    ``idempotency_key`` is unique across the entire table, so two users choosing the same string
+    collide. The digest contains both account ids, so a foreign key now fails to match rather than
+    handing over a stranger's entry and its lines.
+    """
+    entry = JournalEntry.objects.filter(idempotency_key=idempotency_key).first()
+    if entry is None:
+        return None
+    if entry.payload_fingerprint != payload_fingerprint:
+        raise IdempotencyKeyConflictError(
+            f"Idempotency key {idempotency_key!r} was already used for a different request."
+        )
+    return entry
 
 
 def get_balance(account: Account) -> Decimal:
@@ -287,7 +440,10 @@ def get_balance(account: Account) -> Decimal:
             Value(_ZERO, output_field=DecimalField(max_digits=20, decimal_places=4)),
         )
     )
-    return result["balance"]
+    # `.aggregate()` is typed as returning Any, so without the cast `warn_return_any` is satisfied
+    # by a function that could return anything at all — at the one place every balance in the system
+    # is produced. Coalesce guarantees a Decimal; this is where that guarantee gets written down.
+    return cast(Decimal, result["balance"])
 
 
 def get_quantity(account: Account) -> Decimal:
@@ -303,4 +459,4 @@ def get_quantity(account: Account) -> Decimal:
             Value(_ZERO_SHARES, output_field=DecimalField(max_digits=20, decimal_places=8)),
         )
     )
-    return result["quantity"]
+    return cast(Decimal, result["quantity"])

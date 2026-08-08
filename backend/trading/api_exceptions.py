@@ -38,3 +38,10 @@ class OrderNotOpen(APIException):
     status_code = status.HTTP_409_CONFLICT
     default_detail = "That order is no longer open."
     default_code = "order_not_open"
+
+
+class OrderKeyConflict(APIException):
+    # Same 409 reasoning, and the same silence about the original request (ADR-0024).
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "That idempotency key was already used for a different order."
+    default_code = "order_key_conflict"

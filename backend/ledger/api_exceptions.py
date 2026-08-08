@@ -32,3 +32,16 @@ class InvalidTransfer(APIException):
     status_code = status.HTTP_400_BAD_REQUEST
     default_detail = "The transfer request is not valid."
     default_code = "invalid_transfer"
+
+
+class IdempotencyKeyConflict(APIException):
+    # 409, following OrderNotOpen's precedent: the request is well-formed, and the conflict is with
+    # state rather than with the body. Retrying it unchanged will not help, which is the distinction
+    # a 400 would blur.
+    #
+    # The detail deliberately says nothing about the request the key was first used for. That
+    # request may belong to somebody else — the key column is unique across the whole table — and
+    # echoing it back would replace the disclosure this constraint exists to close (ADR-0024).
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "That idempotency key was already used for a different request."
+    default_code = "idempotency_key_conflict"

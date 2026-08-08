@@ -83,6 +83,12 @@ class Order(models.Model):
     # Same nullable-unique retry token as transfers (ADR-0010): unique when present, and Postgres
     # unique indexes ignore NULLs, so keyless orders never collide.
     idempotency_key = models.CharField(max_length=64, null=True, blank=True, unique=True)
+    # The digest of the request that placed this order (ADR-0024), set whenever a key is. The order
+    # replay is scoped by user as well, which the entry replay cannot be — but the digest is what
+    # catches a client reusing its *own* key for a different order.
+    # DJ001 is suppressed on the field, for the reason given on JournalEntry.payload_fingerprint:
+    # NULL means "no key, so nothing to compare", which "" cannot express.
+    payload_fingerprint = models.CharField(max_length=80, null=True, blank=True)  # noqa: DJ001
     reject_reason = models.CharField(max_length=64, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -107,6 +113,13 @@ class Order(models.Model):
             models.CheckConstraint(
                 condition=models.Q(limit_price__isnull=True) | models.Q(limit_price__gt=0),
                 name="order_limit_price_positive",
+            ),
+            # Mirrors the entry constraint (ADR-0024): a key with nothing to compare against is the
+            # shape that let a reused key replay a different request.
+            models.CheckConstraint(
+                condition=models.Q(idempotency_key__isnull=True)
+                | models.Q(payload_fingerprint__isnull=False),
+                name="keyed_order_has_a_fingerprint",
             ),
         ]
         indexes = [

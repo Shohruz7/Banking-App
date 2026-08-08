@@ -22,12 +22,22 @@ def test_idempotency_key_is_stored_and_unique() -> None:
     destination = AccountFactory.create()
     lines = [LineSpec(source, Decimal("-5.00")), LineSpec(destination, Decimal("5.00"))]
 
-    entry = post_entry(description="keyed", lines=lines, idempotency_key="key-1")
+    # A key now travels with the digest of the request it came from (ADR-0024); post_entry stores
+    # both and refuses one without the other. What this test is about is the unique index, so the
+    # digest here is a stand-in for whatever the calling service would have computed.
+    entry = post_entry(
+        description="keyed", lines=lines, idempotency_key="key-1", payload_fingerprint="v1:stub"
+    )
     assert entry.idempotency_key == "key-1"
 
     # The constraint is the backstop the transfer service relies on; prove the DB really has it.
     with pytest.raises(IntegrityError), transaction.atomic():
-        post_entry(description="same key", lines=lines, idempotency_key="key-1")
+        post_entry(
+            description="same key",
+            lines=lines,
+            idempotency_key="key-1",
+            payload_fingerprint="v1:stub",
+        )
 
 
 @pytest.mark.django_db
@@ -173,14 +183,14 @@ def test_duplicate_key_race_recovers_the_original_entry(monkeypatch: pytest.Monk
         source=source, destination=destination, amount=Decimal("10.00"), idempotency_key="dup"
     )
 
-    real_lookup = services._entry_for_key
+    real_lookup = services._replayed_entry
     misses = {"count": 0}
 
-    def miss_twice(key: str) -> JournalEntry | None:
+    def miss_twice(key: str, digest: str | None) -> JournalEntry | None:
         misses["count"] += 1
-        return None if misses["count"] <= 2 else real_lookup(key)
+        return None if misses["count"] <= 2 else real_lookup(key, digest)
 
-    monkeypatch.setattr(services, "_entry_for_key", miss_twice)
+    monkeypatch.setattr(services, "_replayed_entry", miss_twice)
 
     entry, created = transfer(
         source=source, destination=destination, amount=Decimal("10.00"), idempotency_key="dup"

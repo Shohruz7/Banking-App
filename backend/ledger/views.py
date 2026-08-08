@@ -12,6 +12,7 @@ from typing import Any
 from django.contrib.auth.models import User
 from django.db.models import QuerySet
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.request import Request
@@ -22,9 +23,16 @@ from accounts.models import Account
 from audit.models import AuditAction
 from audit.services import record_audit
 from common.auth import request_user
+from common.schema import error_response
 
-from .api_exceptions import DestinationNotFound, InsufficientFunds, InvalidTransfer, SameAccount
-from .exceptions import InsufficientFundsError, InvalidEntryError
+from .api_exceptions import (
+    DestinationNotFound,
+    IdempotencyKeyConflict,
+    InsufficientFunds,
+    InvalidTransfer,
+    SameAccount,
+)
+from .exceptions import IdempotencyKeyConflictError, InsufficientFundsError, InvalidEntryError
 from .models import JournalLine
 from .serializers import JournalEntrySerializer, JournalLineSerializer, TransferCreateSerializer
 from .services import transfer
@@ -40,8 +48,12 @@ class AccountTransactionsView(ListAPIView[JournalLine]):
     serializer_class = JournalLineSerializer
 
     def get_queryset(self) -> QuerySet[JournalLine]:
+        # Scoped to cash accounts as well as to the owner. The accounts endpoint has always shown
+        # only `.cash()`, so an instrument account's id was never discoverable here — but since
+        # ADR-0025 there are two kinds of instrument account, and the contra's history is a page of
+        # zero-amount rows that mean nothing to a customer. Holdings are read through /holdings/.
         account = get_object_or_404(
-            Account.objects.filter(owner=request_user(self.request)), pk=self.kwargs["pk"]
+            Account.objects.filter(owner=request_user(self.request)).cash(), pk=self.kwargs["pk"]
         )
         return account.lines.all()
 
@@ -61,6 +73,21 @@ class TransferView(APIView):
 
     throttle_scope = "transfer"
 
+    @extend_schema(
+        request=TransferCreateSerializer,
+        responses={
+            201: JournalEntrySerializer,
+            200: JournalEntrySerializer,
+            400: error_response("insufficient_funds", "Not enough funds."),
+            409: error_response("idempotency_key_conflict", "Key already used."),
+        },
+        summary="Move money between accounts",
+        description=(
+            "201 when the transfer posted, **200** when an idempotency key replayed one that "
+            'had already posted — the status is how a client tells "I made this happen" from '
+            '"this had already happened". A key reused for a *different* request is 409.'
+        ),
+    )
     def post(self, request: Request) -> Response:
         serializer = TransferCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -85,6 +112,24 @@ class TransferView(APIView):
                 idempotency_key=data["idempotency_key"],
                 actor=actor,
             )
+        except IdempotencyKeyConflictError as exc:
+            # Audited under its own action rather than as a rejection: the request broke no money
+            # rule, it collided with a key the system had already bound to a different movement —
+            # possibly another user's, since the key column is global (ADR-0024). The context
+            # records the key and this requester's own accounts, never the entry it collided with.
+            record_audit(
+                action=AuditAction.TRANSFER_KEY_CONFLICT,
+                actor=actor,
+                target_type="account",
+                target_id=str(source.pk),
+                context={
+                    "idempotency_key": data["idempotency_key"],
+                    "amount": data["amount"],
+                    "source_account": str(source.pk),
+                    "destination_account": str(destination.pk),
+                },
+            )
+            raise IdempotencyKeyConflict from exc
         except InsufficientFundsError as exc:
             self._audit_rejection(actor, source, destination, data, "insufficient_funds")
             raise InsufficientFunds(str(exc)) from exc

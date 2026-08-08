@@ -6,21 +6,29 @@ deferred trigger, atomicity and the audit trail without restating any of them.
 
 Two shapes of entry come out of here:
 
-*A buy* is two lines — cash out, position in at cost::
+*A buy* is three lines — cash out, position in at cost, and the shares out of the market::
 
-    cash          -1000.0000
-    AAPL position +1000.0000   qty +6.50000000
+    cash                     -1000.0000
+    AAPL position            +1000.0000   qty +6.50000000
+    AAPL shares outstanding      0.0000   qty -6.50000000
 
-*A sell* is three, and the third one is not optional. A position account's balance **is** its cost
-basis, so a sell must remove cost basis rather than proceeds; the difference between what came in
-and what left is the realized gain, and it needs a line of its own or the entry does not balance::
+*A sell* is four, and neither of the last two is optional. A position account's balance **is** its
+cost basis, so a sell must remove cost basis rather than proceeds; the difference between what came
+in and what left is the realized gain, and it needs a line of its own or the entry does not
+balance::
 
-    cash           +480.0000
-    AAPL position  -461.5500   qty -3.00000000
-    Realized P&L    -18.4500
+    cash                      +480.0000
+    AAPL position             -461.5500   qty -3.00000000
+    Realized P&L               -18.4500
+    AAPL shares outstanding      0.0000   qty +3.00000000
 
-That falls out of the model rather than being bolted on, which is why realized P&L needs no stored
+Realized P&L falls out of the model rather than being bolted on, which is why it needs no stored
 column: it is ``get_balance(realized_pnl_account)``, derived like every other balance here.
+
+The shares-outstanding leg is the ADR-0025 contra, appended by ``ledger.services.conserve_shares``
+rather than written out in either builder. It carries no amount because the cash leg already paid
+for the shares; what it carries is the counterparty quantity, without which "shares are conserved"
+is a convention rather than something Postgres can check at COMMIT.
 
 Two rounding edges are handled explicitly below, both of which are silent corruption if missed —
 a break-even sell, and a full exit.
@@ -29,7 +37,7 @@ a break-even sell, and a full exit.
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from accounts.models import Account, AccountType
@@ -37,7 +45,15 @@ from audit.models import AuditAction
 from audit.services import record_audit
 from common.money import quantize_money, quantize_shares
 from ledger.exceptions import InsufficientFundsError
-from ledger.services import LineSpec, get_balance, get_quantity, lock_accounts, post_entry
+from ledger.fingerprints import order_fingerprint
+from ledger.services import (
+    LineSpec,
+    conserve_shares,
+    get_balance,
+    get_quantity,
+    lock_accounts,
+    post_entry,
+)
 from markets.models import Instrument
 from realtime import events
 
@@ -45,6 +61,7 @@ from .exceptions import (
     InstrumentInactiveError,
     InsufficientSharesError,
     InvalidOrderError,
+    OrderKeyConflictError,
     OrderNotOpenError,
 )
 from .models import Order, OrderSide, OrderStatus, OrderType
@@ -135,22 +152,63 @@ def place_order(
         # A market order carries no price by construction — the DB constraint says so too.
         limit_price = None
 
+    digest = (
+        None
+        if idempotency_key is None
+        else order_fingerprint(
+            user_id=user.pk,
+            symbol=instrument.symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            limit_price=limit_price,
+            cash_account_id=cash_account.pk,
+        )
+    )
+
     # Cheap replay check, before any lock — the same first move transfer() makes (ADR-0010).
+    #
+    # Scoped by user, which the entry replay cannot be: `idempotency_key` is unique across the whole
+    # table, so without this filter a key that happened to match another user's order returned that
+    # order — symbol, quantity, price and all — to whoever guessed the string (ADR-0024). The digest
+    # then catches the remaining case, a client reusing its own key for a different order.
     if idempotency_key is not None:
-        replayed = Order.objects.filter(idempotency_key=idempotency_key).first()
+        replayed = Order.objects.filter(idempotency_key=idempotency_key, user=user).first()
         if replayed is not None:
+            if replayed.payload_fingerprint != digest:
+                raise OrderKeyConflictError(
+                    f"Idempotency key {idempotency_key!r} was already used for a different order."
+                )
             return replayed
 
-    order = Order.objects.create(
-        user=user,
-        instrument=instrument,
-        cash_account=cash_account,
-        side=side,
-        order_type=order_type,
-        quantity=quantity,
-        limit_price=limit_price,
-        idempotency_key=idempotency_key,
-    )
+    try:
+        # The savepoint is load-bearing, not decoration. A failed INSERT poisons the transaction it
+        # ran in, so without one the caught IntegrityError would leave every subsequent query
+        # raising TransactionManagementError — the conflict would take out whatever transaction
+        # happened to be open around this call. `transfer` solves the same problem by recovering
+        # outside its atomic block; here the write is a single statement, so a savepoint is enough.
+        with transaction.atomic():
+            order = Order.objects.create(
+                user=user,
+                instrument=instrument,
+                cash_account=cash_account,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=limit_price,
+                idempotency_key=idempotency_key,
+                payload_fingerprint=digest,
+            )
+    except IntegrityError as exc:
+        # The key is taken by a row the lookup above could not see — another user's order, or this
+        # user's own placed a microsecond ago by a concurrent request. Both are conflicts, and the
+        # message deliberately does not distinguish them: saying "that key belongs to someone
+        # else" would confirm a stranger's order exists, the disclosure ADR-0024 closes.
+        if idempotency_key is None:
+            raise
+        raise OrderKeyConflictError(
+            f"Idempotency key {idempotency_key!r} was already used for a different order."
+        ) from exc
     record_audit(
         action=AuditAction.ORDER_PLACED,
         actor=user,
@@ -214,6 +272,10 @@ def execute_fill(order: Order, price: Decimal) -> Order:
             lines = _buy_lines(order, position, notional, quantity)
         else:
             lines = _sell_lines(order, position, notional, quantity)
+        # The shares have to come from, or go back to, somewhere the database can see (ADR-0025).
+        # One call rather than one per branch: a buy and a sell conserve shares the same way, and
+        # the branch that forgot would be the one nothing noticed.
+        lines = conserve_shares(lines)
 
         entry = post_entry(
             description=f"{order.get_side_display()} {quantity} {order.instrument.symbol}",
@@ -221,6 +283,11 @@ def execute_fill(order: Order, price: Decimal) -> Order:
             # Keyed on the order, so a retried fill collides with the unique index instead of
             # posting the trade twice (ADR-0010).
             idempotency_key=f"order:{order.pk}",
+            # Derived from the order, never from the lines just built (ADR-0024). A sell's cost
+            # basis depends on the holding at fill time, so hashing the lines would make the sweep
+            # retrying a fill look like a different request and turn a recovery into a conflict.
+            # The order's own fields do not move, so this digest is stable across every attempt.
+            payload_fingerprint=_fill_fingerprint(order),
         )
 
         order.status = OrderStatus.FILLED
@@ -268,6 +335,24 @@ def execute_fill(order: Order, price: Decimal) -> Order:
         )
 
     return order
+
+
+def _fill_fingerprint(order: Order) -> str:
+    """The digest stored on a fill's entry (ADR-0024).
+
+    A fill has no client request behind it when the matching sweep produces one, so there is nothing
+    to canonicalize except the order itself — which is also exactly what makes the `order:{pk}` key
+    meaningful. Reuses the order payload shape so one function defines what "the same order" means.
+    """
+    return order_fingerprint(
+        user_id=order.user_id,
+        symbol=order.instrument.symbol,
+        side=order.side,
+        order_type=order.order_type,
+        quantity=order.quantity,
+        limit_price=order.limit_price,
+        cash_account_id=order.cash_account_id,
+    )
 
 
 def _buy_lines(

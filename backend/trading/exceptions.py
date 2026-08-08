@@ -23,3 +23,7 @@ class InstrumentInactiveError(TradingError):
 
 class OrderNotOpenError(TradingError):
     """The order has already been filled, cancelled or rejected — there is nothing left to do."""
+
+
+class OrderKeyConflictError(TradingError):
+    """The idempotency key belongs to a different order request (ADR-0024)."""

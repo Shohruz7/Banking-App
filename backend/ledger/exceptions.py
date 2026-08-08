@@ -18,5 +18,21 @@ class UnbalancedEntryError(LedgerError):
     """The entry's signed line amounts do not sum to zero."""
 
 
+class UnbalancedSharesError(LedgerError):
+    """The entry's share quantities do not net to zero *per instrument* (ADR-0025).
+
+    Per instrument, not overall: an entry that adds 100 shares of one instrument and removes 100 of
+    another nets to zero and is still an invention. The unit matters.
+    """
+
+
 class InsufficientFundsError(LedgerError):
     """The source account's balance is less than the amount being moved out of it (ADR-0010)."""
+
+
+class IdempotencyKeyConflictError(LedgerError):
+    """The key has been used before, for a request that is not this one (ADR-0024).
+
+    Distinct from a replay, which is the same request arriving twice and is not an error at all.
+    The whole point of the fingerprint is that these two are now distinguishable.
+    """

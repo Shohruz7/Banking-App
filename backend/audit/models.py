@@ -33,11 +33,21 @@ class AuditAction(models.TextChoices):
     TRANSFER_POSTED = "ledger.transfer_posted", "Transfer posted"
     TRANSFER_REPLAYED = "ledger.transfer_replayed", "Transfer replayed (idempotent)"
     TRANSFER_REJECTED = "ledger.transfer_rejected", "Transfer rejected"
+    # A key reused for a different request (ADR-0024). Worth its own row rather than folding into
+    # TRANSFER_REJECTED: a rejection is a request the rules refused, while this is a request the
+    # system could not safely tell apart from an earlier one — including, before ADR-0024, somebody
+    # else's. A cluster of these on one key is the signature worth being able to search for.
+    TRANSFER_KEY_CONFLICT = "ledger.transfer_key_conflict", "Transfer idempotency key conflict"
     ORDER_PLACED = "trading.order_placed", "Order placed"
     ORDER_RESTED = "trading.order_rested", "Limit order resting"
     ORDER_FILLED = "trading.order_filled", "Order filled"
     ORDER_REJECTED = "trading.order_rejected", "Order rejected"
     ORDER_CANCELLED = "trading.order_cancelled", "Order cancelled"
+    ORDER_KEY_CONFLICT = "trading.order_key_conflict", "Order idempotency key conflict"
+    # Written on every reconciliation run, clean or not (ADR-0026). The all-clear rows are the
+    # valuable ones: a gap in the sequence says the check stopped running, which is the failure
+    # mode a report that only speaks up on bad news cannot tell you about.
+    LEDGER_RECONCILED = "ledger.reconciled", "Ledger invariants checked"
 
 
 class AuditEvent(models.Model):
