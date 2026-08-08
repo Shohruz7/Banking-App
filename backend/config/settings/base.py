@@ -6,6 +6,7 @@ read if present but is never committed.
 """
 
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -292,6 +293,12 @@ FIELD_ENCRYPTION_KEYS: dict[str, str] = {
     )
     if key
 }
+
+# What a newly registered customer starts with (ledger/onboarding.py). Credited to Checking from
+# their own opening-balances equity account, as an ordinary balanced entry — money never appears.
+# Set to 0 to open the accounts empty, which is what Week 9's seed script wants: it funds its own
+# users and would otherwise have to unpick a deposit it never asked for.
+ONBOARDING_OPENING_DEPOSIT = Decimal(env("ONBOARDING_OPENING_DEPOSIT", default="1000.0000"))
 
 # API conventions locked in ADR-0006: one error envelope, cursor pagination.
 REST_FRAMEWORK = {

@@ -116,6 +116,10 @@ ignore = [
 # The sanctioned writers: the ledger's own service and management command, the trading service that
 # posts fills, and the test factories that arrange ledger state.
 "ledger/services.py" = ["TID251"]
+# Registration's opening deposit. A sanctioned poster for the same reason transfer() is: it builds
+# both legs itself and touches accounts that were created microseconds earlier inside the same
+# transaction, so there is no balance to race and nothing to lock.
+"ledger/onboarding.py" = ["TID251"]
 "ledger/management/commands/post_demo_entries.py" = ["TID251"]
 "trading/services.py" = ["TID251"]
 "tests/*" = [
