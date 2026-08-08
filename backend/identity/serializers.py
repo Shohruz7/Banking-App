@@ -12,6 +12,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
@@ -21,6 +22,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from audit.context import current_context
 from audit.models import AuditAction
 from audit.services import record_audit
+from ledger.onboarding import open_starter_accounts
 
 from .api_exceptions import InvalidMFACode
 from .models import MfaDevice, RevokeReason
@@ -86,7 +88,16 @@ class RegisterSerializer(serializers.ModelSerializer[User]):
         return value
 
     def create(self, validated_data: dict[str, Any]) -> User:
-        return User.objects.create_user(**validated_data)
+        """Create the user and open their accounts, or do neither.
+
+        One transaction on purpose. A user who exists without accounts cannot transfer and cannot
+        trade — ``POST /orders/`` requires a ``cash_account`` — so a half-applied registration
+        leaves an account that looks fine on the login screen and is broken everywhere after it.
+        """
+        with transaction.atomic():
+            user = User.objects.create_user(**validated_data)
+            open_starter_accounts(user)
+        return user
 
 
 # ------------------------------------------------------------------------------------------------
