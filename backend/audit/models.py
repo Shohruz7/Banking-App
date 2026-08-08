@@ -18,6 +18,10 @@ class AuditAction(models.TextChoices):
     """Every auditable event, namespaced by the subsystem that emits it."""
 
     USER_REGISTERED = "user.registered", "User registered"
+    # Registration opens accounts as of Week 8, and opening one is a state change worth a row of
+    # its own: the opening deposit is real money arriving, and "where did this balance come from"
+    # should be answerable from the log rather than only from the ledger.
+    ACCOUNTS_OPENED = "accounts.opened", "Starter accounts opened"
     LOGIN_SUCCEEDED = "auth.login_succeeded", "Login succeeded"
     LOGIN_FAILED = "auth.login_failed", "Login failed"
     MFA_CHALLENGED = "auth.mfa_challenged", "MFA challenge issued"
