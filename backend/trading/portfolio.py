@@ -118,14 +118,15 @@ def holdings_for(
 def cash_balance_for(user: User, *, as_of: datetime | None = None) -> Decimal:
     """The user's spendable money: the sum of their **asset** cash accounts.
 
-    ``AccountQuerySet.cash()`` means "not a position", which also admits the opening-balances
-    *equity* account funding creates and the realized-P&L *income* account a sell creates. Those
-    are the other side of a user's own money — summing them in nets a funded portfolio to roughly
-    zero, which is impeccable double-entry and a useless answer to "how much have I got".
+    The reasoning that used to live here — that ``cash()`` also admits the opening-balances equity
+    account and the realized-P&L income account, so summing them nets a funded portfolio to roughly
+    zero — is now the docstring of ``AccountQuerySet.spendable()``, which is where it belongs. This
+    module and ``statements.services`` were the only two callers that got it right by hand; Week 8
+    found the four endpoints that did not.
     """
     total = (
-        Account.objects.filter(owner=user, account_type=AccountType.ASSET)
-        .cash()
+        Account.objects.filter(owner=user)
+        .spendable()
         .with_balance(as_of=as_of)
         .aggregate(
             total=Coalesce(

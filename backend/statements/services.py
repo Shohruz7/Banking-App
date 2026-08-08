@@ -20,7 +20,7 @@ from decimal import Decimal
 from django.contrib.auth.models import User
 from django.utils import timezone
 
-from accounts.models import Account, AccountType
+from accounts.models import Account
 from ledger.models import JournalLine
 from markets.models import Instrument, PriceTick
 from trading.models import Order, OrderStatus
@@ -171,9 +171,11 @@ def statement_accounts(user: User) -> Iterable[Account]:
 
     Asset cash accounts only. Position accounts belong to the brokerage statement, and the
     opening-balances *equity* and realized-P&L *income* accounts are bookkeeping — the other side
-    of the customer's own money, not something they hold.
+    of the customer's own money, not something they hold. That is exactly ``spendable()``, and
+    saying it once means a statement and the dashboard can no longer disagree about what an
+    account is.
     """
-    return Account.objects.filter(owner=user, account_type=AccountType.ASSET).cash()
+    return Account.objects.filter(owner=user).spendable()
 
 
 def build_cash_statement(account: Account, period: Period) -> CashStatementData:
