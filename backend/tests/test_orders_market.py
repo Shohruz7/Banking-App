@@ -54,7 +54,7 @@ def sell(user: User, instrument: Instrument, cash: Account, quantity: str) -> ob
     )
 
 
-def test_market_buy_posts_a_balanced_two_line_entry(
+def test_market_buy_posts_a_balanced_three_line_entry(
     password_user: User, instrument: Instrument, funded_cash_account: Account
 ) -> None:
     """The week's core claim: a fill is a journal entry, subject to every ledger guarantee."""
@@ -65,8 +65,11 @@ def test_market_buy_posts_a_balanced_two_line_entry(
     assert entry is not None
 
     lines = list(entry.lines.all())
-    assert len(lines) == 2
+    # Three since ADR-0025: cash out, position in, and the shares out of the market. The contra
+    # leg moves no money, so the amounts still sum to zero exactly as before.
+    assert len(lines) == 3
     assert sum(line.amount for line in lines) == Decimal("0.0000")
+    assert sum(line.quantity or Decimal("0") for line in lines) == Decimal("0E-8")
     # Keyed on the order, so a retried fill hits the unique index instead of posting twice.
     assert entry.idempotency_key == f"order:{order.pk}"  # type: ignore[attr-defined]
 
@@ -85,7 +88,8 @@ def test_buy_debits_cash_and_credits_the_position_account(
 
     # The cash leg carries no quantity, and the position leg does — the pairing rule in post_entry.
     cash_line = funded_cash_account.lines.exclude(amount__gt=0).first()
-    assert cash_line is not None and cash_line.quantity is None
+    assert cash_line is not None
+    assert cash_line.quantity is None
 
 
 def test_buy_creates_the_position_account_once(
@@ -111,7 +115,7 @@ def test_buy_rejected_when_cash_is_insufficient(
     assert get_balance(funded_cash_account) == Decimal("10000.0000")
 
 
-def test_sell_posts_three_lines_with_realized_pnl(
+def test_sell_posts_four_lines_with_realized_pnl(
     password_user: User, instrument: Instrument, funded_cash_account: Account
 ) -> None:
     """Proceeds in, cost basis out, and the residual to realized P&L — summing to zero."""
@@ -122,8 +126,10 @@ def test_sell_posts_three_lines_with_realized_pnl(
     order = sell(password_user, instrument, funded_cash_account, "3")
     lines = list(order.entry.lines.all())  # type: ignore[attr-defined]
 
-    assert len(lines) == 3
+    # Four since ADR-0025: proceeds, basis out, realized P&L, and the shares back to the market.
+    assert len(lines) == 4
     assert sum(line.amount for line in lines) == Decimal("0.0000")
+    assert sum(line.quantity or Decimal("0") for line in lines) == Decimal("0E-8")
 
     position = position_account_for(password_user, instrument)
     pnl = realized_pnl_account_for(password_user)
@@ -151,7 +157,8 @@ def test_break_even_sell_omits_the_pnl_line(
     order = sell(password_user, instrument, funded_cash_account, "3")
     lines = list(order.entry.lines.all())  # type: ignore[attr-defined]
 
-    assert len(lines) == 2
+    # Three, not four: the P&L line is the one omitted, never the share contra.
+    assert len(lines) == 3
     assert sum(line.amount for line in lines) == Decimal("0.0000")
     # No gain, so no realized-P&L account was ever needed.
     assert not Account.objects.filter(owner=password_user, name="Realized P&L").exists()

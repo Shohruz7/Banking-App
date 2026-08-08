@@ -17,14 +17,14 @@ from django.utils import timezone
 from accounts.models import Account, AccountType
 from identity.models import AuthSession, MfaDevice
 from ledger.models import JournalEntry
-from ledger.services import LineSpec, post_entry
+from ledger.services import LineSpec, conserve_shares, post_entry
 from markets.models import Instrument, PriceTick
 from trading.models import Order, OrderSide, OrderType
 
 #: The password every factory-built user has. Week 4 gave UserFactory a real (hashed) password:
 #: before that no factory user could ever authenticate, which is why nothing exercised the login
 #: path end to end. config.settings.test swaps in a fast hasher so this stays cheap.
-TEST_PASSWORD = "sw0rdf1sh-test-pw"  # noqa: S105 — a test fixture, not a credential
+TEST_PASSWORD = "sw0rdf1sh-test-pw"  # a test fixture, not a credential
 
 
 class UserFactory(factory.django.DjangoModelFactory[User]):
@@ -139,6 +139,11 @@ def give_shares(
 
     Posted against an equity account for the same reason :func:`fund_account` is: the entry has to
     balance, and money has to come from somewhere that is not the code under test.
+
+    Wrapped in ``conserve_shares`` for the same reason a real fill is (ADR-0025). The shares also
+    have to come from somewhere, and since Week 7 that is not a convention — an entry that skipped
+    the contra leg would be refused at COMMIT. This one wrapper is why the ~25 call sites of this
+    helper needed no edits of their own.
     """
     position = position_account(owner, instrument)
     opening = AccountFactory.create(
@@ -148,10 +153,12 @@ def give_shares(
     )
     return post_entry(
         description="opening position",
-        lines=[
-            LineSpec(account=opening, amount=-cost),
-            LineSpec(account=position, amount=cost, quantity=quantity),
-        ],
+        lines=conserve_shares(
+            [
+                LineSpec(account=opening, amount=-cost),
+                LineSpec(account=position, amount=cost, quantity=quantity),
+            ]
+        ),
     )
 
 

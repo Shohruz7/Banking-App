@@ -12,13 +12,22 @@ from .models import JournalEntry, JournalLine
 
 
 class JournalLineSerializer(serializers.ModelSerializer[JournalLine]):
-    """One signed leg: ``amount`` is negative leaving the account, positive arriving."""
+    """One signed leg: ``amount`` is negative leaving the account, positive arriving.
+
+    ``quantity`` is null on a money line and the signed share count on a line touching an
+    instrument account. It was omitted until Week 7, which meant a fill's share movement was
+    invisible in transaction history — harmless while position accounts were unreachable through
+    the API, and a silent hole the moment one became reachable.
+    """
 
     amount = serializers.DecimalField(max_digits=20, decimal_places=4, read_only=True)
+    quantity = serializers.DecimalField(
+        max_digits=20, decimal_places=8, read_only=True, allow_null=True
+    )
 
     class Meta:
         model = JournalLine
-        fields = ("id", "entry_id", "account_id", "amount", "currency", "created_at")
+        fields = ("id", "entry_id", "account_id", "amount", "quantity", "currency", "created_at")
         read_only_fields = fields
 
 

@@ -13,6 +13,9 @@ from django.conf import settings
 from django.db import models
 from django.db.models.functions import Coalesce
 
+from accounts import numbers
+from common.crypto import decrypt, encrypt
+
 
 def _before(as_of: datetime | None) -> models.Q | None:
     """The aggregate filter for an as-of sum, or None for "everything posted so far"."""
@@ -70,11 +73,24 @@ class AccountQuerySet(models.QuerySet["Account"]):
         )
 
     def positions(self) -> "AccountQuerySet":
-        """Only instrument-backed position accounts."""
-        return self.filter(instrument__isnull=False)
+        """Only holdings: instrument-backed accounts someone actually owns shares in.
+
+        The ``account_type`` filter arrived with ADR-0025, which gave every instrument a second
+        instrument-bearing account — the shares-outstanding contra that a fill's third line credits.
+        A contra is EQUITY and is nobody's holding; without this filter it would surface as a
+        position with a negative quantity, netting every portfolio to zero.
+
+        Callers scope by owner first and the contras belong to the system user, so this is belt and
+        braces. It is here anyway because "positions" should mean holdings no matter who asks.
+        """
+        return self.filter(instrument__isnull=False, account_type=AccountType.ASSET)
+
+    def share_contras(self) -> "AccountQuerySet":
+        """The market's side of every holding — the shares-outstanding accounts (ADR-0025)."""
+        return self.filter(instrument__isnull=False, account_type=AccountType.EQUITY)
 
     def cash(self) -> "AccountQuerySet":
-        """Only ordinary money accounts — everything that is not a position."""
+        """Only ordinary money accounts — everything that is not instrument-backed."""
         return self.filter(instrument__isnull=True)
 
 
@@ -88,11 +104,26 @@ class Account(models.Model):
         related_name="accounts",
     )
     name = models.CharField(max_length=100)
+    # The customer-facing account number, envelope-encrypted (ADR-0027). Blank on the accounts a
+    # customer never sees — position accounts, the shares-outstanding contras, the bookkeeping
+    # equity and income accounts — because a number is a label for something someone holds.
+    number_ciphertext = models.CharField(max_length=512, blank=True)
+    # The last four digits, in plaintext and on purpose: a masked label is the common read, and
+    # decrypting a whole page of accounts to render "••••6789" would be a lot of AES for something
+    # that leaks four guessable digits. The full number stays encrypted.
+    number_last4 = models.CharField(max_length=4, blank=True)
     account_type = models.CharField(max_length=10, choices=AccountType.choices)
     currency = models.CharField(max_length=3, default="USD")
-    # Set on a *position* account: one per (owner, instrument), holding that instrument's shares
-    # (ADR-0016). Its balance is the holding's cost basis in USD; its share count is the sum of its
-    # lines' quantities. NULL on every ordinary money account, which is most of them.
+    # Set on the two kinds of instrument-bearing account, distinguished by `account_type`:
+    #
+    #   ASSET  — a *position*, one per (owner, instrument), holding that instrument's shares
+    #            (ADR-0016). Balance is the holding's cost basis in USD; share count is the sum of
+    #            its lines' quantities.
+    #   EQUITY — the *shares-outstanding contra*, one per instrument, owned by the system user
+    #            (ADR-0025). It is where shares come from and go back to, and its existence is what
+    #            lets Postgres check that a fill conserves them.
+    #
+    # NULL on every ordinary money account, which is most of them.
     instrument = models.ForeignKey(
         "markets.Instrument",
         on_delete=models.PROTECT,
@@ -115,12 +146,15 @@ class Account(models.Model):
                 condition=models.Q(instrument__isnull=False),
                 name="one_position_account_per_instrument",
             ),
-            # A holding is something you own. Letting a position account be a liability or an
-            # expense would make its balance mean something other than cost basis.
+            # An instrument-bearing account is either a holding (ASSET, balance = cost basis) or
+            # the market's side of it (EQUITY, the shares-outstanding contra of ADR-0025). Widened
+            # from "must be an asset" to an explicit two-item list rather than to "not a liability":
+            # an INCOME- or EXPENSE-typed instrument account would satisfy the loose version, and
+            # nothing in trading/ is prepared to meet one.
             models.CheckConstraint(
                 condition=models.Q(instrument__isnull=True)
-                | models.Q(account_type=AccountType.ASSET),
-                name="position_account_is_an_asset",
+                | models.Q(account_type__in=[AccountType.ASSET, AccountType.EQUITY]),
+                name="instrument_account_is_an_asset_or_equity",
             ),
             # Income accounts (today: realized P&L) are created lazily, on the first sell that
             # needs one. Two concurrent sells would otherwise each create their own and split the
@@ -137,6 +171,54 @@ class Account(models.Model):
     def __str__(self) -> str:
         return f"{self.name} ({self.account_type})"
 
+    def save(self, *args: object, **kwargs: object) -> None:
+        """Assign a number on first save, to the accounts that should have one (ADR-0027).
+
+        In ``save`` rather than a service because there is no account-creation service to put it
+        in: accounts are made by ``get_or_create`` in the trading services, by the demo command and
+        by test factories, and a rule enforced in one of those would be absent from the others. The
+        alternative — every caller remembering — is the class of convention this week is removing.
+
+        Bookkeeping accounts are deliberately left blank: position accounts, the shares-outstanding
+        contras, and the equity and income accounts are the *other side* of a customer's money
+        rather than something a customer holds. Numbering them would put them in every "your
+        accounts" list that renders one — the mistake ``/accounts/`` already avoids by filtering.
+        """
+        if self._state.adding and not self.number_ciphertext and self._deserves_a_number():
+            self.number = numbers.generate()
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def _deserves_a_number(self) -> bool:
+        return self.instrument_id is None and self.account_type == AccountType.ASSET
+
+    @property
+    def number(self) -> str:
+        """The full account number, decrypted (ADR-0027).
+
+        A property rather than a custom field, for the reason ``MfaDevice.secret`` gives: a field
+        subclass would decrypt during ``values()`` and admin list rendering too, widening the set
+        of code paths holding plaintext. Read on the detail endpoint and nowhere else — list views
+        render :attr:`masked_number`, which costs no decryption at all.
+        """
+        return decrypt(self.number_ciphertext)
+
+    @number.setter
+    def number(self, value: str) -> None:
+        self.number_ciphertext = encrypt(value)
+        self.number_last4 = numbers.last4(value)
+
+    @property
+    def masked_number(self) -> str:
+        """``BK-••••••6789``, built from the plaintext last four — no key needed."""
+        return f"{numbers.PREFIX}-{'•' * 6}{self.number_last4}" if self.number_last4 else ""
+
     @property
     def is_position(self) -> bool:
+        """Whether this account is denominated in shares rather than only in dollars.
+
+        True for a holding *and* for its shares-outstanding contra (ADR-0025) — both carry an
+        instrument, and both must carry a quantity on every line that touches them, which is what
+        this property is asked about. Use ``AccountQuerySet.positions()`` when the question is the
+        narrower "is this somebody's holding".
+        """
         return self.instrument_id is not None

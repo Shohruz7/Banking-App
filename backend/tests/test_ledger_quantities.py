@@ -15,7 +15,7 @@ from django.db.utils import IntegrityError
 from accounts.models import Account, AccountType
 from ledger.exceptions import InvalidEntryError
 from ledger.models import JournalEntry, JournalLine
-from ledger.services import LineSpec, get_balance, get_quantity, post_entry
+from ledger.services import LineSpec, conserve_shares, get_balance, get_quantity, post_entry
 from markets.models import Instrument
 from tests.factories import AccountFactory, InstrumentFactory, UserFactory, position_account
 
@@ -105,12 +105,20 @@ def test_quantities_are_quantized_to_eight_places(instrument: Instrument) -> Non
 
     post_entry(
         description="over-precise",
-        lines=[
-            LineSpec(account=cash, amount=Decimal("-100")),
-            LineSpec(account=position, amount=Decimal("100"), quantity=Decimal("1.234567891234")),
-        ],
+        lines=conserve_shares(
+            [
+                LineSpec(account=cash, amount=Decimal("-100")),
+                LineSpec(
+                    account=position, amount=Decimal("100"), quantity=Decimal("1.234567891234")
+                ),
+            ]
+        ),
     )
     assert get_quantity(position) == Decimal("1.23456789")
+    # The contra was given the *quantized* counterparty quantity, not the raw one — otherwise the
+    # entry would net to 1e-12 of a share and the ADR-0025 trigger would refuse it.
+    contra = Account.objects.share_contras().get(instrument=instrument)
+    assert get_quantity(contra) == Decimal("-1.23456789")
 
 
 def test_a_cash_account_reads_zero_shares() -> None:
@@ -161,10 +169,12 @@ def test_with_balance_and_with_quantity_compose_without_double_counting(
     for _ in range(3):
         post_entry(
             description="lot",
-            lines=[
-                LineSpec(account=opening, amount=Decimal("-100")),
-                LineSpec(account=position, amount=Decimal("100"), quantity=Decimal("1")),
-            ],
+            lines=conserve_shares(
+                [
+                    LineSpec(account=opening, amount=Decimal("-100")),
+                    LineSpec(account=position, amount=Decimal("100"), quantity=Decimal("1")),
+                ]
+            ),
         )
 
     row = Account.objects.filter(pk=position.pk).with_balance().with_quantity().get()
