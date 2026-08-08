@@ -123,3 +123,44 @@ jobs:
 
       - name: Build
         run: npx vite build
+
+  # The client's types are generated from the API's own description, so "the client compiles" is
+  # only meaningful if the description is current. This regenerates both from the running code and
+  # fails on any diff — which is what stops a serializer change from reaching main with a frontend
+  # that still believes the old shape.
+  schema-drift:
+    name: frontend types match the API
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd backend && uv sync --locked
+          cd ../frontend && npm ci
+
+      - name: Regenerate the schema and the types
+        run: |
+          cd backend
+          uv run python manage.py spectacular \
+            --file ../frontend/openapi.json --format openapi-json --fail-on-warn
+          cd ../frontend
+          npx openapi-typescript ./openapi.json -o src/api/schema.d.ts
+
+      - name: Fail if either is stale
+        run: git diff --exit-code -- frontend/openapi.json frontend/src/api/schema.d.ts
+        working-directory: .
