@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+/*
+ * One theme, defined once. Tailwind v4 takes its design tokens from CSS custom properties in an
+ * @theme block rather than from a JS config file, so these names become `bg-surface`, `text-ink`
+ * and so on.
+ *
+ * The two semantic money colours are the only ones worth arguing about: a credit and a debit have
+ * to be distinguishable by something other than hue, because roughly one man in twelve cannot rely
+ * on red-versus-green. Every amount in the app therefore carries an explicit sign as well as a
+ * colour — see `Amount` in components/Amount.tsx.
+ */
+@theme {
+  --color-surface: oklch(100% 0 0);
+  --color-surface-sunken: oklch(97.5% 0.005 250);
+  --color-border: oklch(91% 0.008 250);
+  --color-ink: oklch(22% 0.02 265);
+  --color-ink-muted: oklch(52% 0.02 265);
+  --color-brand: oklch(52% 0.16 255);
+  --color-brand-ink: oklch(100% 0 0);
+  --color-credit: oklch(52% 0.14 155);
+  --color-debit: oklch(55% 0.19 25);
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-surface: oklch(21% 0.015 265);
+    --color-surface-sunken: oklch(17% 0.015 265);
+    --color-border: oklch(31% 0.02 265);
+    --color-ink: oklch(95% 0.005 265);
+    --color-ink-muted: oklch(70% 0.02 265);
+    --color-brand: oklch(70% 0.14 255);
+    --color-brand-ink: oklch(18% 0.02 265);
+    --color-credit: oklch(76% 0.16 155);
+    --color-debit: oklch(72% 0.17 25);
+  }
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  background: var(--color-surface-sunken);
+  color: var(--color-ink);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+/* Money is tabular everywhere: a column of amounts that does not line up on the decimal point is
+   harder to scan, and this is a ledger. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
