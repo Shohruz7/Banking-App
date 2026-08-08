@@ -33,6 +33,7 @@ celerybeat.pid
 # Node (frontend, Week 7+)
 node_modules/
 frontend/dist/
+frontend/coverage/
 
 # Local design docs (kept out of the published repo)
 docs/
