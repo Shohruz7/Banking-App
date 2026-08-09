@@ -51,6 +51,14 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Immediately after SecurityMiddleware, which is where its docs put it and where the ordering
+    # actually matters: it must sit inside the security headers and ahead of everything that would
+    # otherwise do session and auth work for a request that is only ever going to be a CSS file.
+    #
+    # Static here is admin, DRF's browsable API and Swagger — no customer surface — so serving it
+    # from the image that hashed it costs one Python hop and saves a cross-image COPY plus a shared
+    # writable volume that can hold the previous release's bytes (ADR-0035).
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

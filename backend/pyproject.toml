@@ -35,6 +35,23 @@ dependencies = [
     # unpaginated, or the ?q= parameter on /instruments/. A generated schema cannot drift, and it is
     # what Week 9's typed client is generated from.
     "drf-spectacular>=0.28",
+    # Serving it for real (ADR-0034). gunicorn is the supervisor — graceful reload, worker
+    # recycling, a process that restarts a wedged child — and uvicorn is the ASGI loop inside each
+    # worker. daphne above still ships because it is what makes `runserver` serve ASGI in dev;
+    # removing it would break the dev loop in the same week the deploy is being proven.
+    "gunicorn>=23.0",
+    "uvicorn[standard]>=0.34",
+    # `uvicorn.workers.UvicornWorker` is deprecated in-tree and emits a warning on every boot; the
+    # standalone package is where it lives now.
+    "uvicorn-worker>=0.3",
+    # Serves STATIC_ROOT from the image that hashed it (ADR-0035). Only admin, DRF browsable-API
+    # and Swagger assets — no customer surface — so a Python hop is cheaper than the cross-image
+    # COPY and shared writable volume the alternative needs.
+    "whitenoise>=6.8",
+    # The demo dataset is a shipped feature, not a dev convenience: `seed_demo` has to run on the
+    # deployed box, so its dependency belongs in the runtime image. factory-boy stays dev-only —
+    # the seed drives the public services and never imports the test factories.
+    "faker>=33.0",
 ]
 
 [dependency-groups]
