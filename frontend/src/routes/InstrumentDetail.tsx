@@ -16,7 +16,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { useInstrument, usePrices } from "../api/hooks";
 import { Amount } from "../components/Amount";
 import { Card, ErrorNote, Skeleton } from "../components/ui";
-import { formatMoney, toChartNumber, type Money } from "../money";
+import { asMoney, formatMoney, toChartNumber, type Money } from "../money";
 import { useLivePrice } from "../realtime/useStream";
 import OrderTicket from "./OrderTicket";
 
@@ -33,14 +33,30 @@ export default function InstrumentDetail() {
   const [series, setSeries] = useState<Point[]>([]);
 
   useEffect(() => {
-    if (history.data) {
-      setSeries(history.data.map((tick) => ({ at: tick.created_at, price: tick.price })));
-    }
+    if (!history.data) return;
+    const fetched = history.data.map((tick) => ({ at: tick.created_at, price: tick.price }));
+
+    // Merge rather than replace. A background refetch returns the server's view as of its own
+    // moment, which does not include ticks the socket delivered since — so assigning it outright
+    // silently truncated the live tail and the chart jumped backwards. Keep any local point newer
+    // than the last fetched one.
+    setSeries((current) => {
+      const lastFetched = fetched.at(-1)?.at;
+      if (!lastFetched) return current.length > 0 ? current : fetched;
+      const live = current.filter((point) => point.at > lastFetched);
+      return [...fetched, ...live].slice(-500);
+    });
   }, [history.data]);
 
   useLivePrice(symbol, (_symbol, price, at) => {
-    // Bounded: a tab left open for a day would otherwise accumulate a point a minute forever.
-    setSeries((current) => [...current, { at, price: price as Money }].slice(-500));
+    // `asMoney` rather than a bare cast: this string comes off the socket, not out of the generated
+    // types, and `formatMoney` hands it to `BigInt`, which throws on anything non-numeric. A cast
+    // would let one malformed frame take the whole screen down.
+    setSeries((current) => {
+      const point = { at, price: asMoney(price) };
+      // Bounded: a tab left open for a day would otherwise accumulate a point a minute forever.
+      return [...current, point].slice(-500);
+    });
   });
 
   const latest = series.at(-1)?.price ?? instrument.data?.last_price;
@@ -65,6 +81,11 @@ export default function InstrumentDetail() {
         <div className="mt-6 h-64">
           {history.isPending ? (
             <Skeleton className="h-full" />
+          ) : history.isError ? (
+            // Distinct from the empty state below, which this used to fall through to: telling
+            // somebody "no price history yet" because the request failed is an affirmative claim
+            // about their data, and it is wrong.
+            <ErrorNote>Could not load the price history for {symbol.toUpperCase()}.</ErrorNote>
           ) : series.length === 0 ? (
             <p className="text-sm text-ink-muted">
               No price history yet — Celery Beat advances the market once a minute.
