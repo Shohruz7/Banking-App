@@ -26,6 +26,36 @@ export default defineConfig({
       "/ws": { target: "ws://localhost:8000", ws: true },
     },
   },
+  build: {
+    /*
+     * Sourcemaps ship. Nothing collects errors yet — there is no Sentry here, deliberately — so
+     * the only reader is whoever opens a console after a user reports the boundary's panel. That
+     * is exactly the moment a minified frame is worthless. They cost nothing at runtime: the
+     * browser fetches a `.map` only when devtools are open, and nginx serves them like any other
+     * asset.
+     *
+     * Worth being clear about what this exposes, since the source is on GitHub anyway: readable
+     * client code, which was never the secret. Nothing sensitive lives here — `BASE` is a relative
+     * path and there is no build-time env in this project at all (ADR-0030).
+     */
+    sourcemap: true,
+    rollupOptions: {
+      output: {
+        /*
+         * One vendor chunk. Without it the entry is a single 315 kB file, so changing one line of a
+         * route invalidates React, React-DOM, the router and TanStack Query for every returning
+         * visitor. These four move on their own schedule — a dependency bump — and splitting them
+         * out means an ordinary deploy re-downloads only the app.
+         *
+         * Recharts is deliberately absent: it is already isolated by the `lazy()` boundary in
+         * `App.tsx` and naming it here would pull it back into a chunk every screen loads.
+         */
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,
