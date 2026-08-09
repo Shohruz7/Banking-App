@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { useInstruments } from "../api/hooks";
 import { Amount } from "../components/Amount";
 import { Card, Empty, ErrorNote, Field, Skeleton, Table, Td, Th } from "../components/ui";
+import { useDebounced } from "../useDebounced";
 import { usePageTitle } from "../usePageTitle";
 
 export default function Markets() {
@@ -11,7 +12,12 @@ export default function Markets() {
   const [search, setSearch] = useState("");
   // Server-side search: the viewset already supports `?q=` against symbol and name, so filtering
   // here would be a second, worse implementation of a query the API answers.
-  const instruments = useInstruments(search);
+  //
+  // Debounced because the query key *is* the search term: without this every keystroke was a
+  // distinct key and therefore a distinct request, which no amount of `staleTime` can collapse.
+  // The input stays uncontrolled-feeling — `search` still updates on every keystroke, so typing is
+  // never laggy; only the fetch waits.
+  const instruments = useInstruments(useDebounced(search));
 
   return (
     <Card title="Markets">
