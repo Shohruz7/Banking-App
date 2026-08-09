@@ -1,0 +1,48 @@
+# At the repo root, not in backend/, because the images build with the repo as their context: the
+# web image needs `frontend/` and `deploy/nginx/`, and Docker resolves one ignore file per context.
+#
+# Without this the build context carries `backend/.venv` and `frontend/node_modules` — hundreds of
+# megabytes uploaded to the daemon on every build, to be discarded by the first COPY.
+
+# Virtualenvs and package trees — reinstalled inside the image from the lockfiles
+**/.venv
+**/venv
+**/node_modules
+
+# Build output. `frontend/dist` especially: the image builds its own, and copying a host build in
+# would let a stale local bundle win over the one CI just produced.
+frontend/dist
+frontend/coverage
+backend/staticfiles
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+
+# Tooling caches
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/.coverage
+**/coverage.xml
+**/htmlcov
+
+# Runtime state that belongs to a machine, not an image
+backend/media
+**/*.sqlite3
+celerybeat-schedule*
+celerybeat.pid
+
+# Secrets. Belt and braces — `.env` is gitignored too, but a build context is assembled from the
+# working tree rather than from git, so an untracked .env would otherwise be baked into a layer.
+**/.env
+**/.env.*
+!**/.env.example
+
+# History and local notes
+.git
+.github
+docs
+Documentation
+**/.DS_Store
+**/.idea
+**/.vscode
