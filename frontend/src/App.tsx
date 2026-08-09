@@ -7,11 +7,12 @@
  */
 
 import { Suspense, lazy } from "react";
-import { NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 
 import { useAuth } from "./auth/AuthProvider";
 import { Button, Skeleton, cx } from "./components/ui";
 import { StreamProvider, useStream } from "./realtime/useStream";
+import { usePageTitle } from "./usePageTitle";
 import AccountDetail from "./routes/AccountDetail";
 import Dashboard from "./routes/Dashboard";
 import Login from "./routes/Login";
@@ -51,7 +52,8 @@ function RequireAuth() {
   }
 
   // `state` carries where they were headed, so signing in returns them there rather than to the
-  // dashboard — which matters most for a link somebody followed from an email.
+  // dashboard — which matters most for a link somebody followed from an email. `Login` reads it
+  // back and validates it as a same-origin path before navigating.
   if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
 
   return (
@@ -80,6 +82,16 @@ function Shell() {
 
   return (
     <div className="min-h-dvh">
+      {/* Seven nav links, a status dot, a username and a sign-out button sit before the content on
+          every single screen. Without this a keyboard user tabs through all of them each time they
+          navigate. Visually hidden until focused, which is the only state it needs to exist in. */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-3 focus:rounded-lg focus:bg-brand focus:px-4 focus:py-2 focus:text-brand-ink"
+      >
+        Skip to content
+      </a>
+
       <header className="border-b border-border bg-surface">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
           <span className="font-semibold">Banking</span>
@@ -108,7 +120,7 @@ function Shell() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-6">
+      <main id="main" className="mx-auto max-w-5xl px-4 py-6">
         <Suspense fallback={<Skeleton className="h-64" />}>
           <Outlet />
         </Suspense>
@@ -120,9 +132,48 @@ function Shell() {
 /** Already signed in? The login screen is not where you want to be. */
 function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
-  if (loading) return null;
+  // A skeleton rather than `null`. Hard-refreshing on /login with a stored session rendered a
+  // completely blank page for the length of the token exchange — not even the box `RequireAuth`
+  // shows for the same wait.
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-md p-6">
+        <Skeleton className="h-32" />
+      </div>
+    );
+  }
   if (user) return <Navigate to="/" replace />;
   return <>{children}</>;
+}
+
+/**
+ * An unknown URL, said out loud.
+ *
+ * This used to be a silent `<Navigate to="/">`, which was worse than it looks: it discarded the URL
+ * before anything could preserve it, so a signed-out user following a mistyped deep link was sent
+ * to `/`, then bounced to `/login` carrying `/` as their intended destination. Rendering the 404 in
+ * place keeps the address bar honest and leaves the back button working.
+ */
+function NotFound() {
+  usePageTitle("Page not found");
+  const location = useLocation();
+
+  return (
+    <main id="main" className="mx-auto flex min-h-dvh max-w-lg flex-col justify-center gap-4 p-6">
+      <div className="rounded-xl border border-border bg-surface p-6">
+        <h1 className="text-lg font-semibold">Page not found</h1>
+        <p className="mt-2 text-sm text-ink-muted">
+          Nothing lives at <code className="text-ink">{location.pathname}</code>.
+        </p>
+        <Link
+          to="/"
+          className="mt-5 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Back to dashboard
+        </Link>
+      </div>
+    </main>
+  );
 }
 
 export default function App() {
@@ -157,7 +208,7 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
       </Route>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<NotFound />} />
     </Routes>
   );
 }

@@ -8,7 +8,7 @@
  */
 
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthProvider";
@@ -19,6 +19,18 @@ export default function Login() {
   usePageTitle("Sign in");
   const { signIn, completeMfa } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // `RequireAuth` records where the user was headed before it bounced them here. Reading it is what
+  // makes a deep link survive a sign-in — without this the state was written on every redirect and
+  // never looked at, so everybody landed on the dashboard and the link they followed was lost.
+  //
+  // Only same-origin paths are honoured. `state` comes off the history entry, which a page on
+  // another site can populate before navigating here, so treating it as a bare redirect target
+  // would be an open redirect: a phishing link that lands on the real login form and then hands the
+  // freshly-signed-in user to an attacker's page.
+  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
+  const destination = from?.startsWith("/") && !from.startsWith("//") ? from : "/";
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -36,7 +48,7 @@ export default function Login() {
       // A 200 carrying `mfa_required` is *not* a failure — the password was right. Branching on the
       // body rather than the status is the whole reason the backend returns 200 here.
       if (result.status === "mfa-required") setMfaToken(result.token);
-      else navigate("/", { replace: true });
+      else navigate(destination, { replace: true });
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : "Could not sign in. Please try again.",
@@ -53,7 +65,7 @@ export default function Login() {
     setBusy(true);
     try {
       await completeMfa(mfaToken, code);
-      navigate("/", { replace: true });
+      navigate(destination, { replace: true });
     } catch (caught) {
       const message =
         caught instanceof ApiError && caught.code === "invalid_mfa_code"
