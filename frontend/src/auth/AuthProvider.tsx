@@ -20,7 +20,7 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { apiFetch, onSessionExpired } from "../api/client";
+import { SessionExpired, apiFetch, onSessionExpired } from "../api/client";
 import { isMfaChallenge, type LoginResponse, type TokenPair, type User } from "../api/types";
 import { clearSession, getRefreshToken, hasStoredSession, setTokens } from "./store";
 
@@ -64,7 +64,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // `apiFetch` sees no access token, gets a 401, and refreshes — the ordinary path, reused rather
     // than a second bootstrap-only implementation of it.
     loadUser()
-      .catch(() => clearSession())
+      .catch((error: unknown) => {
+        // Only an actually-rejected session clears the token. This used to catch everything, which
+        // meant any failure at all deleted the refresh token from localStorage — so a transient 502
+        // while the backend restarted, or a page loaded on a flaky connection, silently logged the
+        // user out for good. They would reopen the tab and find themselves signed out by a deploy.
+        //
+        // `SessionExpired` is the only failure that means the credential is dead: `apiFetch` throws
+        // it exactly when the refresh was attempted and refused. A TypeError from an unreachable
+        // server, or a 5xx from a proxy, says nothing about whether the token is still good — so
+        // keep it and let the next navigation try again.
+        if (error instanceof SessionExpired) clearSession();
+      })
       .finally(() => setLoading(false));
   }, [loadUser]);
 
