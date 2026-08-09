@@ -149,6 +149,27 @@ async function send(path: string, options: RequestOptions, token: string | null)
 }
 
 /**
+ * Send, and on a 401 refresh once and send again.
+ *
+ * The one place that knows how a request survives an expired access token. It used to be inlined
+ * in `apiFetch` and `apiFetchWithStatus`, and `downloadFile` was written without it — which is
+ * precisely the bug that costs you every statement download on a tab left open past the token
+ * lifetime. Three callers, one rule.
+ */
+async function sendWithRefresh(path: string, options: RequestOptions): Promise<Response> {
+  const response = await send(path, options, options.anonymous ? null : getAccessToken());
+  if (response.status !== 401 || options.anonymous) return response;
+
+  try {
+    const token = await refreshOnce();
+    return await send(path, options, token);
+  } catch {
+    announceExpiry();
+    throw new SessionExpired();
+  }
+}
+
+/**
  * Make a request, refreshing once on a 401 and retrying.
  *
  * `TResponse` is asserted, not validated: the generated types are the contract and CI proves they
@@ -159,17 +180,7 @@ export async function apiFetch<TResponse>(
   path: string,
   options: RequestOptions = {},
 ): Promise<TResponse> {
-  let response = await send(path, options, options.anonymous ? null : getAccessToken());
-
-  if (response.status === 401 && !options.anonymous) {
-    try {
-      const token = await refreshOnce();
-      response = await send(path, options, token);
-    } catch {
-      announceExpiry();
-      throw new SessionExpired();
-    }
-  }
+  const response = await sendWithRefresh(path, options);
 
   if (!response.ok) throw await toApiError(response);
   if (response.status === 204) return undefined as TResponse;
@@ -189,19 +200,10 @@ export async function apiFetchWithStatus<TResponse>(
   path: string,
   options: RequestOptions = {},
 ): Promise<{ status: number; data: TResponse }> {
-  let response = await send(path, options, options.anonymous ? null : getAccessToken());
-
-  if (response.status === 401 && !options.anonymous) {
-    try {
-      const token = await refreshOnce();
-      response = await send(path, options, token);
-    } catch {
-      announceExpiry();
-      throw new SessionExpired();
-    }
-  }
+  const response = await sendWithRefresh(path, options);
 
   if (!response.ok) throw await toApiError(response);
+  if (response.status === 204) return { status: 204, data: undefined as TResponse };
   return { status: response.status, data: (await response.json()) as TResponse };
 }
 
@@ -220,9 +222,14 @@ export function fetchCursor<TResponse>(url: string): Promise<TResponse> {
  * A statement PDF needs an `Authorization` header, so a plain `<a href>` cannot fetch it — the
  * browser sends no bearer token and gets a 401. Fetch it, turn it into an object URL, click it,
  * and revoke.
+ *
+ * Through `sendWithRefresh` like everything else. Calling `send` directly here meant the download
+ * was the one request in the app that could not survive an expired access token: leave the
+ * statements page open for the fifteen minutes the token lasts and every download failed with
+ * "Could not download that statement", which is true and completely misleading.
  */
 export async function downloadFile(path: string, filename: string): Promise<void> {
-  const response = await send(path, {}, getAccessToken());
+  const response = await sendWithRefresh(path, {});
   if (!response.ok) throw await toApiError(response);
 
   const url = URL.createObjectURL(await response.blob());
