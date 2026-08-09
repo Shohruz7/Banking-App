@@ -1,0 +1,139 @@
+## The server block. `${DOMAIN}` is substituted by the nginx image's entrypoint at container start.
+##
+## One origin serves everything: the bundle, /api, /ws and /static. That is not a deployment
+## preference — the client hardcodes `BASE = "/api/v1"` and derives its socket URL from
+## `window.location.host` (ADR-0030), so there is no configuration that would let it talk to a
+## different host. The upside is that no CORS layer exists anywhere in this system.
+##
+## TLS is not configured here. Certbot writes a second server block into conf.d/ on the host and
+## this one keeps serving the ACME challenge; see deploy/README.md. That keeps the image identical
+## between the CI stack, a laptop and the box, which is the point of building it once.
+
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # --- the proxy contract, shared by every proxied location below ------------------------------
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # What SECURE_PROXY_SSL_HEADER reads. Without it Django believes every request arrived over
+    # plain HTTP and SECURE_SSL_REDIRECT answers with a redirect to https — which arrives here
+    # again, and redirects again. An infinite loop that only appears once TLS terminates upstream.
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-ID $request_id_final;
+    proxy_redirect off;
+
+    # --- security headers ------------------------------------------------------------------------
+    #
+    # An include, not inline directives, and the reason is an nginx rule that removes headers
+    # without saying so: `add_header` is inherited by a nested block only when that block declares
+    # none of its own. `location = /index.html` sets Cache-Control, so it was silently serving the
+    # app's HTML with no CSP while every other path showed one. See security-headers.conf.
+
+    include /etc/nginx/security-headers.conf;
+
+    # --- probes and ACME -------------------------------------------------------------------------
+
+    # Certbot's webroot challenge. Must stay reachable over plain HTTP even once a redirect to
+    # https is in place on the host, or renewal fails against a 301.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Answered by nginx itself. A liveness probe that proxied to Django could not distinguish
+    # "nginx is down" from "Django is down", which is the one distinction it exists to make.
+    location = /healthz {
+        access_log off;
+        add_header Content-Type application/json always;
+        include /etc/nginx/security-headers.conf;
+        return 200 '{"status":"ok"}';
+    }
+
+    # --- the API ---------------------------------------------------------------------------------
+
+    location /api/ {
+        proxy_pass http://app;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 60s;
+
+        # A dead app container is nginx's HTML error page by default, and the client's `apiFetch`
+        # reads `response.json()` — so an outage arrived as a parse failure rather than as an error
+        # the UI could describe. ADR-0006 says the API has exactly one error envelope; that has to
+        # stay true when the thing answering is not the API.
+        proxy_intercept_errors on;
+        error_page 502 503 504 = @api_unavailable;
+    }
+
+    location /ws/ {
+        proxy_pass http://app;
+        # The three lines that make an upgrade work. HTTP/1.1 because 1.0 has no Upgrade, and the
+        # Connection header must be literally "upgrade" — not the keepalive "" used for /api/.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        # A socket is idle between price ticks by design. The default 60s would close a healthy
+        # connection every minute, and the client would reconnect forever without ever being wrong.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Django admin, DRF's browsable API and Swagger assets, served by whitenoise inside the app
+    # image (ADR-0035).
+    location /static/ {
+        proxy_pass http://app;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    # The weakest surface on the box: a password form with no second factor behind it. The API's
+    # TOTP guards /api/v1/auth/, not this — Django admin is session auth, so a stolen superuser
+    # password is the entire control. Allowlisted by default; widen it while demoing.
+    location /admin/ {
+        include /etc/nginx/admin-allowlist.conf;
+        proxy_pass http://app;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    location @api_unavailable {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/security-headers.conf;
+        # The ADR-0006 envelope, byte for byte, so a client that only knows how to read
+        # `body.error.code` keeps working when the backend is the thing that is down.
+        return 503 '{"error":{"code":"service_unavailable","message":"The service is temporarily unavailable. Please try again shortly.","details":{}}}';
+    }
+
+    # --- the bundle ------------------------------------------------------------------------------
+
+    # Vite emits content-hashed filenames, so an asset URL is immutable by construction: change the
+    # bytes and the name changes. `immutable` tells the browser not to bother revalidating.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+        include /etc/nginx/security-headers.conf;
+        try_files $uri =404;
+    }
+
+    # The one file that must never be cached. It is the map from route to chunk name, so a stale
+    # copy points at chunks the current release does not serve — exactly the white screen the
+    # client's error boundary reloads to escape. Cache it and that reload is useless, because the
+    # reload fetches the same stale map.
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/security-headers.conf;
+    }
+
+    # The SPA fallback, and the single most common way a React Router deploy is broken: without it,
+    # loading /portfolio directly — or refreshing on it — is a 404 from nginx, because there is no
+    # such file. The router only ever sees a URL the server already agreed to serve.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

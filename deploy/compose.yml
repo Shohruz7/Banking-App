@@ -1,0 +1,139 @@
+## The whole application, containerised.
+##
+## The root `docker-compose.yml` is a different thing and stays: it runs Postgres and Redis only,
+## for a host `runserver` with autoreload and an attachable debugger. That is the dev loop and it is
+## faster than anything here. This file is what production runs, and what CI smoke-tests so that
+## claim is checked rather than asserted.
+##
+##     docker compose -f deploy/compose.yml --env-file deploy/.env up -d
+##
+## Images are referenced by tag, never `latest` (ADR-0033): a rollback is then
+## `IMAGE_TAG=<previous-sha> ./deploy/deploy.sh`, which is a different operation from a rebuild.
+
+name: banking
+
+x-backend: &backend
+  image: ${BACKEND_IMAGE:-banking-backend}:${IMAGE_TAG:-local}
+  env_file: [.env]
+  # Every backend service runs the same image and the same code, so they must also see the same
+  # environment — an anchor rather than four copies that can drift.
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    migrate: {condition: service_completed_successfully}
+  volumes:
+    - media:/app/media
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-banking}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-banking}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no published port. The database is reachable on the compose network and nowhere
+    # else; exposing 5432 on a public box is how a demo becomes an incident.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-banking} -d ${POSTGRES_DB:-banking}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # `noeviction` is not a default worth accepting here. This one Redis is three things at once
+    # (base.py): the DRF throttle cache on db 0, the Celery broker on db 1, and the Channels layer
+    # on db 2. Under `allkeys-lru` a memory spike would silently evict *queued tasks* — a statement
+    # that never generates, a limit order that never matches, and no error anywhere. Refusing
+    # writes is a loud failure, which is the right one. Throttle keys carry TTLs, so the cache half
+    # still expires normally.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Runs to completion, once per `up`, before anything that touches the database starts.
+  #
+  # The alternative — migrating from each container's entrypoint — runs N times concurrently for N
+  # workers and relies on Postgres' migration lock to serialise them. That mostly works, which is
+  # worse than either outcome: a failed migration would be retried independently by every container
+  # instead of stopping the release.
+  migrate:
+    image: ${BACKEND_IMAGE:-banking-backend}:${IMAGE_TAG:-local}
+    env_file: [.env]
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: "no"
+
+  app:
+    <<: *backend
+    # The image's CMD: gunicorn supervising uvicorn workers, HTTP and WebSocket on one pool.
+    # No published port — nginx reaches it over the compose network.
+    expose: ["8000"]
+
+  worker:
+    <<: *backend
+    command: ["celery", "-A", "config", "worker", "--loglevel", "info", "--concurrency", "2"]
+    healthcheck:
+      test: ["CMD", "celery", "-A", "config", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  beat:
+    <<: *backend
+    # **Exactly one replica, always.** Beat is a scheduler, not a worker: two of them means every
+    # periodic task fires twice — two price ticks a minute, two statement runs on the 1st, two
+    # reconciliation passes. `deploy.replicas` is not set anywhere for the same reason, and scaling
+    # this service is the one thing that must never be done casually.
+    command:
+      - celery
+      - -A
+      - config
+      - beat
+      - --loglevel
+      - info
+      - --schedule
+      - /var/run/celery/schedule
+    volumes:
+      - media:/app/media
+      # Beat's own schedule state. On a named volume so a restart does not re-fire everything it
+      # believes it missed while down.
+      - beatstate:/var/run/celery
+
+  web:
+    image: ${WEB_IMAGE:-banking-web}:${IMAGE_TAG:-local}
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      app: {condition: service_started}
+    volumes:
+      # Read-only: nginx needs to read certificates, never to write them. Certbot runs on the host
+      # (ADR-0040), so renewal keeps working even when this stack is down.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  beatstate:
+  certbot-webroot:
+  # Statement PDFs. A named volume rather than S3 (ADR-0039) — durable across deploys on a
+  # single-host box, and included in the nightly off-box backup, which is where the durability was
+  # actually wanted.
+  media:
