@@ -18,7 +18,7 @@ import { ApiError } from "../api/client";
 import { useAccounts, usePlaceOrder } from "../api/hooks";
 import type { OrderSide, OrderType } from "../api/types";
 import { Amount } from "../components/Amount";
-import { Button, Card, ErrorNote, Field, Select } from "../components/ui";
+import { Button, Card, ErrorNote, Field, Select, Skeleton } from "../components/ui";
 import type { Money } from "../money";
 
 export default function OrderTicket({
@@ -102,6 +102,25 @@ export default function OrderTicket({
   }
 
   const options = accounts.data?.results ?? [];
+
+  // The ticket had neither branch: it rendered instantly with an empty "Cash account" select on
+  // both first paint and outright failure, so "still loading" and "cannot load" looked identical
+  // to "you have no accounts" — on the screen that spends money.
+  if (accounts.isPending) {
+    return (
+      <Card title={`Trade ${symbol}`}>
+        <Skeleton className="h-64" />
+      </Card>
+    );
+  }
+
+  if (accounts.isError) {
+    return (
+      <Card title={`Trade ${symbol}`}>
+        <ErrorNote>Could not load your accounts, so an order cannot be placed.</ErrorNote>
+      </Card>
+    );
+  }
 
   return (
     <Card title={`Trade ${symbol}`}>

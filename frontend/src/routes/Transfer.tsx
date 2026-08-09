@@ -21,7 +21,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { useAccounts, useTransfer } from "../api/hooks";
 import { Amount } from "../components/Amount";
-import { Button, Card, ErrorNote, Field, Select, Skeleton } from "../components/ui";
+import { Button, Card, Empty, ErrorNote, Field, Select, Skeleton } from "../components/ui";
 
 export default function Transfer() {
   const accounts = useAccounts();
@@ -98,6 +98,22 @@ export default function Transfer() {
     <Card title="Transfer">
       {accounts.isPending ? (
         <Skeleton className="h-48" />
+      ) : accounts.isError ? (
+        // Without this branch the form renders anyway, with two dropdowns holding nothing but
+        // "Choose an account" and a Send button disabled forever — a screen that looks functional,
+        // says nothing, and cannot work. On the one screen that moves money, say what happened.
+        <ErrorNote>Could not load your accounts, so a transfer cannot be started.</ErrorNote>
+      ) : options.length < 2 ? (
+        // The "To" list filters out whatever is selected as the source, so a single-account holder
+        // sees an empty destination dropdown and no reason for it.
+        <Empty
+          title="A transfer needs two accounts"
+          hint={
+            options.length === 1
+              ? "You have one account, so there is nowhere to move money to yet."
+              : "No accounts were found on this profile."
+          }
+        />
       ) : (
         <form onSubmit={onSubmit} className="flex max-w-lg flex-col gap-4">
           {error && <ErrorNote>{error}</ErrorNote>}
