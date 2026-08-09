@@ -50,16 +50,21 @@ OPENING_BALANCES_NAME = "Opening balances"
 _ZERO = Decimal("0.0000")
 
 
-def open_starter_accounts(user: User) -> tuple[Account, Account]:
+def open_starter_accounts(user: User, *, deposit: Decimal | None = None) -> tuple[Account, Account]:
     """Open Checking and Savings for a brand-new user, funding Checking.
 
     Returns the pair in the order they are opened. Call inside the transaction that creates the
     user: a customer who exists without accounts is the state this function exists to prevent, and
     a half-applied registration would recreate it.
 
-    With ``ONBOARDING_OPENING_DEPOSIT`` set to zero the accounts are still opened and no entry is
-    posted — which is what Week 9's seed script wants, since it funds its own users and would
-    otherwise have to unpick a deposit it never asked for.
+    ``deposit`` overrides ``ONBOARDING_OPENING_DEPOSIT`` for this one call. That parameter is what
+    keeps ``seed_demo`` off ``post_entry``: the seed wants a different opening balance per customer,
+    and without it the only ways to get one were to mutate the setting between calls or to post the
+    entry itself — the second of which would make the seed a second, untested ledger writer, which
+    is exactly what the TID251 fence exists to make a deliberate act (ADR-0037).
+
+    Zero opens the accounts and posts nothing, equity account included. Both the setting default and
+    an explicit ``Decimal("0")`` reach that path.
     """
     checking = Account.objects.create(
         owner=user, name=CHECKING_NAME, account_type=AccountType.ASSET, currency="USD"
@@ -68,7 +73,8 @@ def open_starter_accounts(user: User) -> tuple[Account, Account]:
         owner=user, name=SAVINGS_NAME, account_type=AccountType.ASSET, currency="USD"
     )
 
-    deposit: Decimal = settings.ONBOARDING_OPENING_DEPOSIT
+    if deposit is None:
+        deposit = settings.ONBOARDING_OPENING_DEPOSIT
     if deposit > _ZERO:
         _post_opening_deposit(user, checking, deposit)
 
