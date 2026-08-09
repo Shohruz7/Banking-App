@@ -22,6 +22,7 @@ import { ApiError } from "../api/client";
 import { useAccounts, useTransfer } from "../api/hooks";
 import { Amount } from "../components/Amount";
 import { Button, Card, Empty, ErrorNote, Field, Select, Skeleton } from "../components/ui";
+import { ZERO_MONEY } from "../money";
 import { usePageTitle } from "../usePageTitle";
 
 export default function Transfer() {
@@ -185,7 +186,7 @@ export default function Transfer() {
           {source && (
             <p className="text-sm text-ink-muted">
               Available:{" "}
-              <Amount value={options.find((a) => a.id === source)?.balance ?? "0.0000"} />
+              <Amount value={options.find((a) => a.id === source)?.balance ?? ZERO_MONEY} />
             </p>
           )}
 
