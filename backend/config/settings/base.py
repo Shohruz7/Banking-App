@@ -121,9 +121,30 @@ CHANNEL_LAYER_URL = env("CHANNEL_LAYER_URL", default=_redis_db(REDIS_URL, 2))
 # The channel layer (ADR-0022). It must be shared: a fill commits in a web worker and has to reach
 # a socket held by a different process, and a price tick is published from Celery entirely — an
 # in-process layer would deliver each event only to whichever worker happened to produce it.
+#
+# **`RedisPubSubChannelLayer`, not `RedisChannelLayer`, and the difference is not academic.** The
+# core layer models each channel as a Redis list and reads it with a blocking pop; an idle socket —
+# which every socket here is, between price ticks — eventually trips redis-py's read timeout, and
+# the `TimeoutError` propagates out of the consumer's receive loop and closes the connection. The
+# client reconnects, so nothing looks broken; the socket just quietly dies every minute or so under
+# no load at all.
+#
+# Nothing in the test suite could have caught that: `config/settings/test.py` uses the in-memory
+# layer, so the Redis backend had never actually been exercised until Week 9 stood the real stack up
+# and watched a socket drop. It was found by `deploy/smoke_socket.py` on its first run.
+#
+# The pub/sub layer is also simply the right model for this application. Every publisher here calls
+# `group_send` (`realtime/events.py`) and every consumer joins groups; nothing sends to a single
+# named channel and nothing needs a message to survive having no listener. That is fan-out, which is
+# what Redis pub/sub is, and it means no lists, no expiry bookkeeping and no blocking reads.
+#
+# What is given up, stated plainly: pub/sub has no persistence, so a message published while a
+# consumer is briefly disconnected is lost rather than queued. That is already the contract —
+# ADR-0023 says a reconnecting client re-reads over HTTP rather than replaying events, precisely
+# because at-least-once delivery was never promised.
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
         "CONFIG": {"hosts": [CHANNEL_LAYER_URL]},
     }
 }
