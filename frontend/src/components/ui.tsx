@@ -123,6 +123,8 @@ type SelectProps = SelectHTMLAttributes<HTMLSelectElement> & { label: string; er
 
 export function Select({ label, error, id, children, className, ...rest }: SelectProps) {
   const selectId = id ?? `select-${label.toLowerCase().replace(/\s+/g, "-")}`;
+  const errorId = `${selectId}-error`;
+
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={selectId} className="text-sm font-medium">
@@ -132,6 +134,10 @@ export function Select({ label, error, id, children, className, ...rest }: Selec
         {...rest}
         id={selectId}
         aria-invalid={error ? true : undefined}
+        // `Field` above has always done this and `Select` never did, which left the message visible
+        // but unannounced on focus. Live rather than theoretical: both transfer dropdowns and the
+        // order ticket's cash account route their validation errors through here.
+        aria-describedby={error ? errorId : undefined}
         className={cx(
           "rounded-lg border bg-surface px-3 py-2 text-sm",
           "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand",
@@ -142,7 +148,7 @@ export function Select({ label, error, id, children, className, ...rest }: Selec
         {children}
       </select>
       {error && (
-        <p role="alert" className="text-xs text-debit">
+        <p id={errorId} role="alert" className="text-xs text-debit">
           {error}
         </p>
       )}
