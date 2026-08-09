@@ -88,7 +88,8 @@ def test_history_spans_the_requested_window_and_does_not_reach_the_future(
 
     oldest = JournalEntry.objects.order_by("created_at").first()
     newest = JournalEntry.objects.order_by("-created_at").first()
-    assert oldest is not None and newest is not None
+    assert oldest is not None
+    assert newest is not None
 
     span_days = (newest.created_at - oldest.created_at).days
     # Generous bounds on purpose: the events are randomly placed, so asserting an exact span would
