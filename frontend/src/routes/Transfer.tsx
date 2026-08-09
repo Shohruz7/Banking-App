@@ -22,8 +22,10 @@ import { ApiError } from "../api/client";
 import { useAccounts, useTransfer } from "../api/hooks";
 import { Amount } from "../components/Amount";
 import { Button, Card, Empty, ErrorNote, Field, Select, Skeleton } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 export default function Transfer() {
+  usePageTitle("Transfer");
   const accounts = useAccounts();
   const transfer = useTransfer();
 

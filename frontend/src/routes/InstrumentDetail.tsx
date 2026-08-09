@@ -18,6 +18,7 @@ import { Amount } from "../components/Amount";
 import { Card, ErrorNote, Skeleton } from "../components/ui";
 import { asMoney, formatMoney, toChartNumber, type Money } from "../money";
 import { useLivePrice } from "../realtime/useStream";
+import { usePageTitle } from "../usePageTitle";
 import OrderTicket from "./OrderTicket";
 
 interface Point {
@@ -29,6 +30,8 @@ export default function InstrumentDetail() {
   const { symbol = "" } = useParams();
   const instrument = useInstrument(symbol);
   const history = usePrices(symbol);
+  // The symbol comes from the URL, so unlike the account screen this needs nothing loaded first.
+  usePageTitle(symbol.toUpperCase());
 
   const [series, setSeries] = useState<Point[]>([]);
 

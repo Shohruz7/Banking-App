@@ -3,10 +3,47 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      An icon, so the browser stops asking for one. With no `rel="icon"` declared at all, every
+      cold visit fires a speculative `GET /favicon.ico` — a 404 per visitor in the access log,
+      which is noise in the one place you want to notice real 404s after a deploy.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+
+    <!--
+      Two theme colours, because as of Week 9 there really are two themes. A single value would
+      paint the mobile browser chrome for one of them and leave it wrong for the other.
+    -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#12161f" media="(prefers-color-scheme: dark)" />
+
+    <!--
+      `noindex` is deliberate and not a placeholder. This is a public demo of a banking UI: a login
+      form and a registration form on a real domain. Being in a search index invites credential
+      stuffing and confused visitors, and offers nothing in return — anybody who should find this
+      arrives from a CV or a README link.
+    -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta
+      name="description"
+      content="A personal banking and brokerage platform built on a double-entry ledger whose balance invariant is enforced by the database itself."
+    />
+
     <title>Banking Platform</title>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div style="margin: 4rem auto; max-width: 32rem; padding: 0 1.5rem; font-family: system-ui, sans-serif">
+        <h1 style="font-size: 1.125rem">This app needs JavaScript</h1>
+        <p style="line-height: 1.6">
+          It is a single-page client that renders entirely in the browser and talks to a JSON API.
+          With scripting disabled there is nothing to show — not even a sign-in form.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

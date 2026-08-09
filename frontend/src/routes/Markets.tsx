@@ -4,8 +4,10 @@ import { Link } from "react-router-dom";
 import { useInstruments } from "../api/hooks";
 import { Amount } from "../components/Amount";
 import { Card, Empty, ErrorNote, Field, Skeleton, Table, Td, Th } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 export default function Markets() {
+  usePageTitle("Markets");
   const [search, setSearch] = useState("");
   // Server-side search: the viewset already supports `?q=` against symbol and name, so filtering
   // here would be a second, worse implementation of a query the API answers.

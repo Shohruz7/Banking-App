@@ -17,8 +17,10 @@ import type { MfaEnrollment } from "../api/types";
 import { useAuth } from "../auth/AuthProvider";
 import { useToast } from "../components/Toaster";
 import { Button, Card, ErrorNote, Field } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 export default function Settings() {
+  usePageTitle("Settings");
   const { user, signOut, refreshUser } = useAuth();
   const toast = useToast();
 

@@ -13,8 +13,10 @@ import { useHoldings, usePortfolio } from "../api/hooks";
 import { Amount, PnL } from "../components/Amount";
 import { Card, Empty, ErrorNote, Skeleton, Table, Td, Th } from "../components/ui";
 import { formatQuantity } from "../money";
+import { usePageTitle } from "../usePageTitle";
 
 export default function Portfolio() {
+  usePageTitle("Portfolio");
   const portfolio = usePortfolio();
   const holdings = useHoldings();
 

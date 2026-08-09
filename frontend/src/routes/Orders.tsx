@@ -3,6 +3,7 @@ import type { OrderStatus } from "../api/types";
 import { Amount } from "../components/Amount";
 import { Badge, Button, Card, Empty, ErrorNote, Skeleton, Table, Td, Th } from "../components/ui";
 import { formatQuantity } from "../money";
+import { usePageTitle } from "../usePageTitle";
 
 const TONE: Record<OrderStatus, "good" | "bad" | "pending" | "neutral"> = {
   filled: "good",
@@ -12,6 +13,7 @@ const TONE: Record<OrderStatus, "good" | "bad" | "pending" | "neutral"> = {
 };
 
 export default function Orders() {
+  usePageTitle("Orders");
   const orders = useOrders();
   const cancel = useCancelOrder();
 

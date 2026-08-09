@@ -13,8 +13,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthProvider";
 import { Button, Card, ErrorNote, Field } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 export default function Login() {
+  usePageTitle("Sign in");
   const { signIn, completeMfa } = useAuth();
   const navigate = useNavigate();
 

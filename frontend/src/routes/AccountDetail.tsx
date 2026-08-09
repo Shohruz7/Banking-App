@@ -13,6 +13,7 @@ import { useParams } from "react-router-dom";
 import { useAccount, useTransactions } from "../api/hooks";
 import { Amount } from "../components/Amount";
 import { Button, Card, Empty, ErrorNote, Skeleton, Table, Td, Th } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 const formatDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -20,6 +21,9 @@ const formatDate = (iso: string) =>
 export default function AccountDetail() {
   const { id = "" } = useParams();
   const account = useAccount(id);
+  // Null until the name arrives, so the tab keeps the previous title rather than flashing a
+  // placeholder for the length of one request.
+  usePageTitle(account.data?.name ?? null);
   const history = useTransactions(id);
   const [revealed, setRevealed] = useState(false);
 

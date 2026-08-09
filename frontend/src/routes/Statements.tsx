@@ -13,11 +13,13 @@ import { downloadFile } from "../api/client";
 import { useStatements } from "../api/hooks";
 import { useToast } from "../components/Toaster";
 import { Button, Card, Empty, ErrorNote, Skeleton, Table, Td, Th } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 const formatPeriod = (start: string) =>
   new Date(start).toLocaleDateString(undefined, { month: "long", year: "numeric" });
 
 export default function Statements() {
+  usePageTitle("Statements");
   const statements = useStatements();
   const toast = useToast();
   const [downloading, setDownloading] = useState<string | null>(null);

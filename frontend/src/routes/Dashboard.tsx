@@ -3,8 +3,10 @@ import { Link } from "react-router-dom";
 import { useAccounts, usePortfolio } from "../api/hooks";
 import { Amount, PnL } from "../components/Amount";
 import { Card, Empty, ErrorNote, Skeleton } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 export default function Dashboard() {
+  usePageTitle("Dashboard");
   const accounts = useAccounts();
   const portfolio = usePortfolio();
 

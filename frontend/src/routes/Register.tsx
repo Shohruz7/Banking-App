@@ -17,8 +17,10 @@ import { apiFetch, ApiError } from "../api/client";
 import type { User } from "../api/types";
 import { useAuth } from "../auth/AuthProvider";
 import { Button, Card, ErrorNote, Field } from "../components/ui";
+import { usePageTitle } from "../usePageTitle";
 
 export default function Register() {
+  usePageTitle("Create an account");
   const { signIn } = useAuth();
   const navigate = useNavigate();
 
