@@ -65,17 +65,24 @@ export default defineConfig({
       include: ["src/**/*.{ts,tsx}"],
       exclude: ["src/**/*.test.{ts,tsx}", "src/test/**", "src/api/schema.d.ts", "src/main.tsx"],
       /*
-       * Gated per-directory, not globally, and the omission is deliberate rather than an oversight.
+       * Gated per-module, not globally, and the omission is deliberate rather than an oversight.
        *
        * The modules below carry the behaviour worth protecting: the refresh dedupe, the socket
        * protocol, the decimal formatting, the idempotency-key discipline. Those are gated hard.
        *
-       * The route components are *not* gated. They are thin projections of query results, and the
+       * Most route components are *not* gated. They are thin projections of query results, and the
        * only honest way to reach 80% on them is a dozen render-smoke tests that assert a heading
        * appeared — which would raise the number without protecting anything, exactly the kind of
        * measurement Week 7 removed from the backend when it stopped counting the test suite in its
-       * own coverage. `Transfer.tsx` is tested because it holds real logic; the rest earn tests
-       * when they earn behaviour.
+       * own coverage.
+       *
+       * Week 9 applied that same criterion in the other direction and found three modules on the
+       * wrong side of it. `useStream.tsx` is the socket→cache mapping ADR-0032 is *about*, and it
+       * had no test at all while `socket.ts` next to it sat at 91%. `OrderTicket.tsx` carries the
+       * identical per-attempt idempotency discipline that got `Transfer.tsx` tested. `Login.tsx`
+       * holds the two-step MFA flow, where "a 200 is a challenge, not a success" is exactly the
+       * kind of inversion a person reviewing a diff will not notice. None of the three was a thin
+       * projection; the rule was right and the list was incomplete.
        */
       thresholds: {
         // `client.ts` and not `api/**`: `hooks.ts` next to it is declarative query wiring, and
@@ -83,9 +90,30 @@ export default defineConfig({
         // Floors sit a point or two under what the suite actually achieves, the same way the
         // backend gate sits at 96 against 97: an honest small dip should not block a merge, while
         // a real regression still does.
-        "src/api/client.ts": { lines: 80, functions: 75, branches: 70, statements: 80 },
-        "src/realtime/socket.ts": { lines: 80, functions: 80, branches: 75, statements: 80 },
+        "src/api/client.ts": { lines: 85, functions: 85, branches: 74, statements: 85 },
+        "src/realtime/socket.ts": { lines: 88, functions: 90, branches: 78, statements: 88 },
         "src/money.ts": { lines: 95, functions: 90, branches: 75, statements: 95 },
+
+        // Session handling. Both were ungated while holding the token storage and the bootstrap
+        // that decides whether a returning tab is signed in.
+        "src/auth/store.ts": { lines: 85, functions: 95, branches: 64, statements: 85 },
+        "src/auth/AuthProvider.tsx": { lines: 82, functions: 95, branches: 78, statements: 82 },
+
+        // The three the criterion above had misfiled.
+        "src/routes/OrderTicket.tsx": { lines: 85, functions: 82, branches: 70, statements: 85 },
+        "src/routes/Transfer.tsx": { lines: 85, functions: 80, branches: 80, statements: 85 },
+        "src/routes/Login.tsx": { lines: 90, functions: 95, branches: 70, statements: 90 },
+
+        // `useStream.tsx`'s floor is frankly modest, and saying why is better than quietly setting
+        // a number: the event→cache mapping is covered, `useLivePrice` and the subscribe/unsubscribe
+        // callbacks are not, and those need a component that mounts a chart to exercise honestly.
+        // The gate is set where the suite actually is so a regression in the mapping still trips it.
+        "src/realtime/useStream.tsx": { lines: 65, functions: 20, branches: 55, statements: 65 },
+
+        // The boundary is the only thing between a render throw and a blank page, and its
+        // reload-once guard is the sort of logic that looks obviously right and was not — the test
+        // caught it inverting on the first run.
+        "src/components/ErrorBoundary.tsx": { lines: 85, functions: 70, branches: 75, statements: 85 },
       },
     },
   },

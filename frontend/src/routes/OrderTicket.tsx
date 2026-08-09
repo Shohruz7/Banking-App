@@ -19,7 +19,7 @@ import { useAccounts, usePlaceOrder } from "../api/hooks";
 import type { OrderSide, OrderType } from "../api/types";
 import { Amount } from "../components/Amount";
 import { Button, Card, ErrorNote, Field, Select, Skeleton } from "../components/ui";
-import type { Money } from "../money";
+import { asMoney, formatMoney, formatQuantity, type Money } from "../money";
 
 export default function OrderTicket({
   symbol,
@@ -68,10 +68,15 @@ export default function OrderTicket({
         idempotency_key: attemptKey.current,
       });
 
+      // Formatted, not echoed. The wire carries full ledger precision — `"6.50000000"` and
+      // `"153.8500"` — because the ledger needs it; a person reading a confirmation does not, and
+      // "Filled 6.50000000 AAPL at 153.8500" reads like a machine talking to itself.
       setConfirmation(
         order.status === "filled"
-          ? `Filled ${order.filled_quantity} ${symbol} at ${order.filled_price ?? "—"}.`
-          : `Order resting. It will fill when ${symbol} crosses ${limitPrice}.`,
+          ? `Filled ${formatQuantity(order.filled_quantity)} ${symbol} at ${
+              order.filled_price ? formatMoney(order.filled_price) : "—"
+            }.`
+          : `Order resting. It will fill when ${symbol} crosses ${formatMoney(asMoney(limitPrice))}.`,
       );
       attemptKey.current = null;
       setQuantity("");

@@ -79,7 +79,13 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   override componentDidMount(): void {
-    // Reached only when the tree rendered, which is the definition of "the reload worked".
+    // The error path mounts this component too — React commits the fallback and calls
+    // `componentDidMount` *before* `componentDidCatch`. Clearing unconditionally therefore wiped
+    // the guard a moment before the handler above checked it, which turned "reload at most once"
+    // into "reload every time" against a chunk that is never coming back. Only a clean render
+    // means the reload worked.
+    if (this.state.error) return;
+
     try {
       sessionStorage.removeItem(RELOAD_FLAG);
     } catch {
