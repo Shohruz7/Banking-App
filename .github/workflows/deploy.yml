@@ -1,0 +1,103 @@
+name: Deploy
+
+# Builds on every green CI run against main; **ships only when a human approves**.
+#
+# The split is deliberate. Building on every merge means the artifact for any commit already exists
+# when you want it, which is what makes a rollback a thirty-second operation. Shipping on every merge
+# means a bad afternoon reaches production unattended, and this is a bank.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # One-button rollback: dispatch with an older SHA. This is the reason compose pins ${IMAGE_TAG}
+  # and never `latest` — with a floating tag, "roll back" and "rebuild" are the same command.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy (a git SHA). Defaults to the current commit."
+        required: false
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build · push to ghcr
+    runs-on: ubuntu-latest
+    # Never build from a run whose tests failed. `workflow_run` fires on completion, not on success.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+
+    strategy:
+      matrix:
+        include:
+          - name: backend
+            dockerfile: backend/Dockerfile
+          - name: web
+            dockerfile: frontend/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # For workflow_run, the default checkout is the *default branch tip*, which may already
+          # have moved past the commit CI actually validated.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - id: resolve
+        run: echo "tag=${{ github.event.inputs.tag || github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          # Both a SHA and a moving `main`. The SHA is what compose pins and what a rollback names;
+          # `main` exists only so a human can see at a glance what the latest build was.
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/banking-${{ matrix.name }}:${{ steps.resolve.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/banking-${{ matrix.name }}:main
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  deploy:
+    name: ship it
+    needs: build
+    runs-on: ubuntu-latest
+    # This is where the approval lives. `production` carries the SSH secrets *and* a required
+    # reviewer, so the job cannot even see the key until somebody says yes — which is a stronger
+    # gate than an `if:` anyone with write access could edit.
+    environment: production
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          # Long enough for a pull on a small box, short enough to fail rather than hang.
+          command_timeout: 10m
+          # A deploy key over SSH rather than a self-hosted runner on the box: a runner would hand
+          # anyone who can open a pull request a shell inside the production network.
+          script: |
+            set -euo pipefail
+            cd /srv/banking
+            git fetch --quiet origin main
+            git checkout --quiet ${{ needs.build.outputs.tag }} -- deploy/
+            ./deploy/deploy.sh ${{ needs.build.outputs.tag }}
