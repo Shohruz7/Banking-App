@@ -48,8 +48,9 @@ SECURE_HSTS_PRELOAD = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 
-# Needed the moment a browser client posts from another origin (Week 9's SPA). The values are the
-# deploy's business; the setting exists now so the deploy is a variable rather than a code change.
+# The SPA authenticates with bearer tokens and needs no CSRF, so this is not for the client at all
+# — it is for **Django admin**, whose login is session auth and which answers 403 behind a proxy
+# without it. The values are the deploy's business; see deploy/.env.example.
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
 # Hashed, manifest-named static files, so a deploy cannot serve last release's admin CSS from a

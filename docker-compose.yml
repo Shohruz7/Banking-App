@@ -1,5 +1,7 @@
 # Local development infrastructure only — Django runs on the host for a fast dev loop.
-# Full app containerization (nginx, ASGI, Celery) is a Week 8 task.
+# The full stack — nginx, gunicorn, Celery, Beat — lives in deploy/compose.yml. This file stays
+# because a host `runserver` with autoreload and an attachable debugger beats a compose stack that
+# rebuilds an image on every edit.
 services:
   postgres:
     image: postgres:16-alpine

@@ -6,7 +6,7 @@ Seeds a demo user with checking, savings, and an equity account; posts two balan
 through the posting service and one transfer through the transfer service; then prints each
 account's derived balance. Idempotent on the user/accounts (get-or-create) but appends fresh
 entries each run — this is a build-time sanity toy, not the Faker seed script (that lands in
-Week 8).
+`accounts.seed_demo`).
 """
 
 from decimal import Decimal

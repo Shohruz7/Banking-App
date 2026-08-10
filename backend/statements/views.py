@@ -45,7 +45,7 @@ class StatementDownloadView(APIView):
     """``GET /api/v1/statements/{id}/download/`` — stream the PDF.
 
     ``FileResponse`` streams through the storage backend rather than reading the file into memory,
-    which is also what keeps this working unchanged when Week 8 points ``default`` at S3.
+    which is also what would keep this working unchanged if ``default`` ever moved to S3 (ADR-0039).
     """
 
     @extend_schema(

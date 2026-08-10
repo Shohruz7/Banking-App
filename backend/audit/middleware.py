@@ -21,9 +21,12 @@ from .context import audit_context
 def client_ip(request: HttpRequest) -> str | None:
     """Best-effort client IP.
 
-    ``X-Forwarded-For`` is only consulted because Week 8 puts nginx in front; the leftmost entry is
-    the original client. Behind a proxy that does not strip a client-supplied header this value is
-    spoofable — it is evidence in a log, never an access-control input.
+    ``X-Forwarded-For`` is only consulted because nginx is in front (ADR-0038); the leftmost
+    entry is the original client. Behind a proxy that does not strip a client-supplied header
+    this value is spoofable — it is evidence in a log, never an access-control input.
+
+    Note the deliberate contrast with throttling, which takes the *rightmost* entry (ADR-0038):
+    what nginx observed, because that one is an access-control input.
     """
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
     # A header that is present but blank falls through to REMOTE_ADDR rather than yielding None:

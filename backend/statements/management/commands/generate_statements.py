@@ -1,6 +1,6 @@
 """Generate statements for a month by hand.
 
-The same task Beat runs, reachable without waiting for the 1st — which is how the Week 8 demo seed
+The same task Beat runs, reachable without waiting for the 1st — which is how the demo seed
 will produce a year of statements in one go, and how a missed month is backfilled after an outage.
 """
 

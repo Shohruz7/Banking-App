@@ -24,7 +24,8 @@ dependencies = [
     # a different process, and a price tick is published from a Celery worker entirely.
     "channels-redis>=4.2",
     # Monthly statement PDFs (ADR-0021). Pure Python, no system libraries — which is why it is
-    # ReportLab and not a wkhtmltopdf/WeasyPrint pipeline that Week 8's image would have to carry.
+    # ReportLab and not a wkhtmltopdf/WeasyPrint pipeline. The payoff arrived in Week 9: the runtime
+    # image needs no system packages at all beyond the Python base.
     "reportlab>=4.2",
     # Envelope encryption for sensitive columns (ADR-0027). AES-GCM comes from here rather than
     # from a Django field library so the key-management seam is ours and a KMS can slot in behind
@@ -33,7 +34,7 @@ dependencies = [
     # OpenAPI schema (ADR-0028). The only API documentation before Week 7 was a hand-maintained
     # table in the README, which had already drifted — it did not mention that GET /orders/ was
     # unpaginated, or the ?q= parameter on /instruments/. A generated schema cannot drift, and it is
-    # what Week 9's typed client is generated from.
+    # what the typed client is generated from.
     "drf-spectacular>=0.28",
     # Serving it for real (ADR-0034). gunicorn is the supervisor — graceful reload, worker
     # recycling, a process that restarts a wedged child — and uvicorn is the ASGI loop inside each

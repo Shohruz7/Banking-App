@@ -2,7 +2,7 @@
 
 A management command rather than a data migration, deliberately: migrations are permanent and
 awkward to revise, and this list *will* be revised. ``update_or_create`` on the symbol makes reruns
-idempotent, so it is safe in a fresh checkout, a demo reset, and Week 8's Faker seed alike.
+idempotent, so it is safe in a fresh checkout, a demo reset, and `seed_demo` alike.
 
 Starting prices and volatilities are plausible rather than real — a utility walks quieter than a
 growth name, which is what makes a seeded portfolio look like a portfolio.

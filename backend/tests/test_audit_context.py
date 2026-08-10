@@ -63,7 +63,7 @@ def test_request_context_is_immutable() -> None:
     ("meta", "expected"),
     [
         ({"REMOTE_ADDR": "192.0.2.10"}, "192.0.2.10"),
-        # Leftmost XFF entry is the original client; Week 8 puts nginx in front.
+        # Leftmost XFF entry is the original client; nginx is in front (ADR-0038).
         (
             {"HTTP_X_FORWARDED_FOR": "203.0.113.5, 10.0.0.1", "REMOTE_ADDR": "10.0.0.1"},
             "203.0.113.5",

@@ -117,7 +117,7 @@ def test_the_list_is_cursor_paginated(auth_client: APIClient, password_user: Use
 
 
 def test_the_command_generates_a_named_period(password_user: User) -> None:
-    """How Week 8's seed will produce a year of statements, and how a missed month is backfilled."""
+    """How `seed_demo` produces a year of statements, and how a missed month is backfilled."""
     cash = AccountFactory.create(owner=password_user, name="Everyday")
     with freeze_time("2026-07-04T09:00:00Z"):
         fund_account(cash, Decimal("300.0000"))

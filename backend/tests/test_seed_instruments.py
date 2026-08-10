@@ -1,7 +1,7 @@
 """The instrument seed command.
 
 Idempotence is the property that matters: this runs in a fresh checkout, on every demo reset, and
-from Week 8's Faker seed, and none of those may produce duplicates or fail on a second pass.
+from `seed_demo`, and none of those may produce duplicates or fail on a second pass.
 """
 
 from decimal import Decimal

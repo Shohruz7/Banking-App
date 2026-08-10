@@ -43,7 +43,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/health/", HealthView.as_view(), name="health"),
     path("api/v1/ready/", ReadinessView.as_view(), name="ready"),
-    # The API describes itself (ADR-0028), and Week 9's typed client is generated from it.
+    # The API describes itself (ADR-0028), and the typed client is generated from it.
     path("api/v1/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
         "api/v1/docs/",

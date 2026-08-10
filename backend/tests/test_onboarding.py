@@ -1,6 +1,6 @@
 """What registration gives a new customer (ledger/onboarding.py).
 
-Before Week 8 registration created a ``User`` row and nothing else, which no test noticed because
+Until Week 8 registration created a ``User`` row and nothing else, which no test noticed because
 every test builds its own accounts through a factory. A browser noticed immediately: sign up, land
 on an empty dashboard, and be unable to transfer or trade, because ``POST /orders/`` needs a
 ``cash_account`` that does not exist.
@@ -97,7 +97,7 @@ def test_a_failed_registration_leaves_no_accounts_behind(api_client: APIClient) 
 
 
 def test_a_zero_deposit_opens_the_accounts_empty(api_client: APIClient, settings) -> None:  # type: ignore[no-untyped-def]
-    """The escape hatch Week 9's seed script needs: accounts, no deposit, no equity account."""
+    """The escape hatch `seed_demo` needs: accounts, no deposit, no equity account."""
     settings.ONBOARDING_OPENING_DEPOSIT = Decimal("0.0000")
 
     user = _register(api_client)
