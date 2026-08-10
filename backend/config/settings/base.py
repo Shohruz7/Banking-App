@@ -219,6 +219,13 @@ CELERY_BEAT_SCHEDULE = {
         "task": "ledger.check_invariants",
         "schedule": crontab(hour=3, minute=20),
     },
+    # Retention for machine-generated market data (ADR-0041). Weekly rather than nightly: it deletes
+    # a rolling window, so running it seven times as often deletes a seventh as much each time and
+    # buys nothing. 04:10 keeps it clear of the reconciliation pass above.
+    "purge-price-ticks": {
+        "task": "markets.purge_price_ticks",
+        "schedule": crontab(day_of_week="sun", hour=4, minute=10),
+    },
     # Promised in Week 4, floated in Week 5, never landed until now: SimpleJWT's OutstandingToken
     # table grows by one row per login forever, and nothing was pruning it. Weekly is ample — the
     # rows are only interesting while a refresh token could still be presented, which is one day.
@@ -228,9 +235,9 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-# DRF keeps throttle history here (ADR-0015). The default LocMemCache is per-process, so behind
-# Week 8's multiple workers the effective rate becomes N × configured — prod.py overrides with no
-# fallback, the same posture SECRET_KEY takes in ADR-0004.
+# DRF keeps throttle history here (ADR-0015). The default LocMemCache is per-process, so behind the
+# two gunicorn workers in deploy/compose.yml the effective rate becomes N × configured — prod.py
+# overrides with no fallback, the same posture SECRET_KEY takes in ADR-0004.
 CACHES = {"default": env.cache_url("CACHE_URL", default="locmemcache://")}
 
 # Login accepts an email or a username; the resolution lives in a backend, not in a swapped user
@@ -296,8 +303,9 @@ LOGGING = {
     },
 }
 
-# Generated statement PDFs (ADR-0021). Written through Django's storage API so Week 8 repoints
-# `default` at S3 without touching a line of statement code.
+# Generated statement PDFs (ADR-0021). Written through Django's storage API, so the day a second
+# app host makes S3 worth its dependencies, that is one entry in `STORAGES` and not a line of
+# statement code (ADR-0039).
 MEDIA_ROOT = env("MEDIA_ROOT", default=str(BASE_DIR / "media"))
 # Deliberately no MEDIA_URL route. The only path to a statement is the owner-scoped download view;
 # a file served off a guessable static path would bypass every ownership check in the system.
@@ -325,9 +333,16 @@ FIELD_ENCRYPTION_KEYS: dict[str, str] = {
 
 # What a newly registered customer starts with (ledger/onboarding.py). Credited to Checking from
 # their own opening-balances equity account, as an ordinary balanced entry — money never appears.
-# Set to 0 to open the accounts empty, which is what Week 9's seed script wants: it funds its own
-# users and would otherwise have to unpick a deposit it never asked for.
+# `seed_demo` passes its own per-customer amount rather than reading this, which is what keeps it
+# off `post_entry` (ADR-0037). Set to 0 to open accounts with no deposit and no equity account.
 ONBOARDING_OPENING_DEPOSIT = Decimal(env("ONBOARDING_OPENING_DEPOSIT", default="1000.0000"))
+
+# How long price history is kept (ADR-0041). 400 days rather than 90, and the reason is a coupling
+# that is easy to miss: `statements.services.period_end_prices` falls back to an instrument's
+# initial price when a period holds no tick, so regenerating a statement whose ticks have been
+# purged would produce different numbers than the PDF that was issued. 400 days puts that beyond any
+# plausible regeneration window. 0 disables the purge entirely.
+PRICE_TICK_RETENTION_DAYS = env.int("PRICE_TICK_RETENTION_DAYS", default=400)
 
 # API conventions locked in ADR-0006: one error envelope, cursor pagination.
 REST_FRAMEWORK = {

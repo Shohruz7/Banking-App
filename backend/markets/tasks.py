@@ -5,6 +5,7 @@
 """
 
 import logging
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -75,3 +76,41 @@ def advance_prices(source: PriceSource | None = None) -> dict[str, Any]:
         transaction.on_commit(lambda: match_resting_orders.delay())
 
     return {"skipped": False, "ticked": ticked}
+
+
+@shared_task(name="markets.purge_price_ticks")
+def purge_price_ticks() -> dict[str, Any]:
+    """Delete price ticks older than ``PRICE_TICK_RETENTION_DAYS`` (ADR-0041).
+
+    The one retention policy this system ships, and deliberately the only one. ``PriceTick`` is
+    machine-generated market data with no personal content — a symbol, a number and a timestamp —
+    so deleting it raises none of the questions the other two candidates do. At 55 instruments on a
+    sixty-second tick it is also the table that actually threatens the disk: roughly 79,000 rows a
+    day, which is ~29M a year.
+
+    ``AuthSession`` and ``AuditEvent`` purges stay deferred, in writing. Both hold personal data, so
+    a retention rule for them is really an erasure policy, and this system has an append-only audit
+    log that Postgres refuses to let anyone ``DELETE``. Resolving that tension means pseudonymising
+    ``actor_label`` rather than deleting rows — a design decision that deserves its own week, not a
+    ``timedelta`` smuggled in beside this one.
+
+    **Why 400 days and not 90.** ``statements.services.period_end_prices`` falls back to an
+    instrument's ``initial_price`` when a period contains no tick, so regenerating an old statement
+    after its ticks have been purged would produce *different numbers* than the PDF that was issued.
+    400 days puts the purge horizon beyond any plausible regeneration window and past a full year of
+    comparisons. Already-generated statements are stored artifacts and are unaffected either way —
+    this is only about what a regeneration would compute.
+    """
+    days = settings.PRICE_TICK_RETENTION_DAYS
+    if days <= 0:
+        # 0 disables it, so a deploy that wants to keep everything need not unschedule the task.
+        logger.info("price tick purge disabled (PRICE_TICK_RETENTION_DAYS=%s)", days)
+        return {"deleted": 0, "retention_days": days}
+
+    cutoff = timezone.now() - timedelta(days=days)
+    # `_raw_delete`-free and deliberately unbatched: Django's `delete()` on a queryset with no
+    # cascading relations is a single DELETE, and PriceTick is referenced by nothing.
+    deleted, _ = PriceTick.objects.filter(created_at__lt=cutoff).delete()
+
+    logger.info("purged %s price ticks older than %s", deleted, cutoff.isoformat())
+    return {"deleted": deleted, "retention_days": days, "cutoff": cutoff.isoformat()}
