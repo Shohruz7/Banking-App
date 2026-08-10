@@ -9,6 +9,47 @@ software: concurrent writes to the same account, retried requests, and partial f
 rule matters, it is enforced somewhere it cannot be bypassed — usually Postgres — rather than by
 convention in application code.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    browser["Browser<br/>React 19 · TypeScript"]
+
+    subgraph edge["web container"]
+        nginx["nginx<br/>bundle · /api · /ws · /static"]
+    end
+
+    subgraph app_tier["app container"]
+        gunicorn["gunicorn + uvicorn workers<br/>HTTP and WebSocket, one pool"]
+    end
+
+    subgraph async["worker + beat containers"]
+        worker["Celery worker<br/>fills · statements"]
+        beat["Celery Beat<br/>price ticks · matching · reconciliation"]
+    end
+
+    pg[("PostgreSQL 16<br/>the ledger, and its triggers")]
+    redis[("Redis 7")]
+
+    browser -->|"one origin, always"| nginx
+    nginx --> gunicorn
+    gunicorn --> pg
+    gunicorn -->|"cache · channel layer"| redis
+    beat -->|"broker"| redis
+    redis --> worker
+    worker --> pg
+    worker -.->|"published on commit"| redis
+    redis -.->|"fan-out to sockets"| gunicorn
+```
+
+One Redis, three logical databases: the throttle cache on 0, the Celery broker on 1, the channel
+layer on 2. They shared one until Week 7, which welded three unrelated blast radii together — a
+`celery purge` during an incident also dropped every live socket's group membership.
+
+The dotted path is the one worth following: a fill commits in the worker, publishes **on commit**
+(ADR-0023), and reaches a socket held by a *different process* through the channel layer. CI proves
+that crossing on every push rather than asserting it.
+
 ## What it does
 
 **Ledger.** Accounts hold no balance column; a balance is the sum of an account's signed journal
@@ -86,9 +127,11 @@ refresh, transfers and orders each have their own ceiling.
 | Data    | PostgreSQL 16 · Redis 7                                      |
 | Auth    | JWT with rotating refresh · TOTP MFA (pyotp)                 |
 | Async   | Celery + Beat (price ticks, limit-order matching, statements) |
-| Realtime| Django Channels over a Redis channel layer (daphne/ASGI)     |
+| Realtime| Django Channels over a Redis pub/sub channel layer           |
 | Reports | ReportLab PDF statements behind Django's storage API         |
 | Client  | React 19 · TypeScript · Vite · TanStack Query · Tailwind v4  |
+| Serving | nginx · gunicorn + uvicorn workers · whitenoise               |
+| Deploy  | Docker multi-stage images · compose · GitHub Actions → GHCR   |
 | Tooling | uv · ruff · mypy · pytest — npm · eslint · tsc · vitest      |
 
 ## Quickstart
@@ -136,6 +179,70 @@ port. Statements for any past month can be generated on demand:
 ```sh
 uv run python manage.py generate_statements --period 2026-07
 ```
+
+## Running the whole stack
+
+The quickstart above runs Django on the host, which is the fast loop. To run what the deploy runs —
+nginx, gunicorn, a Celery worker, Beat, Postgres and Redis, all containerised:
+
+```sh
+cp deploy/.env.example deploy/.env.ci     # fill in the two keys that have no defaults
+make up                                    # builds both images, waits for health
+make seed                                  # 55 instruments, then the demo dataset
+```
+
+Then <http://localhost:8080>, signing in as `demo` / `demo-password-1234`.
+
+`make smoke` runs the one check that cannot be a unit test: it opens a WebSocket through nginx,
+subscribes to a symbol, and then publishes a tick **from the worker container**. Receiving it proves
+the Redis channel layer carries a message between two processes — the gap Week 6 wrote down and could
+not close, because the test suite's channel layer is in-process.
+
+### The demo dataset
+
+`seed_demo` produces a regenerable dataset, and every row of it goes through the same public services
+the application uses — `open_starter_accounts`, `transfer`, `place_order` — never through
+`post_entry` (ADR-0037). That is what makes it worth quoting:
+
+| | |
+| --- | --- |
+| Customers | 260 |
+| Accounts | ~1,500 |
+| Journal entries | ~10,000 |
+| Journal lines | ~21,000 |
+| Orders | ~1,400 across 55 instruments |
+| Audit events | ~24,000 |
+| History | six months, backdated |
+
+Because it was written through the services, `manage.py check_ledger_invariants` over it is evidence
+about the application rather than about a fixture — and CI runs exactly that on every push.
+
+The rejections in it are deliberate. Roughly a tenth of the transfers and orders bounce off the
+overdraft check, because an audit log where nobody ever mistyped an amount is less convincing than
+one with `transfer_rejected` rows in it.
+
+There is no `--reset`, and there cannot be: `AuditEvent` is append-only by Postgres trigger and
+`AuditEvent.actor` is `PROTECT`, so a customer who has acted cannot be deleted. Re-seeding means an
+empty database — three guarantees meeting, all behaving as designed.
+
+## Deployment
+
+Every artifact is here and exercised — CI stands the whole stack up on each push and runs the demo
+against it — but **no machine is provisioned**. That is a deliberate stopping point: the images, the
+compose topology, the nginx config and the scripts are the work; renting an instance is a decision
+with a monthly bill attached. [`deploy/README.md`](deploy/README.md) is the runbook.
+
+The shape, and the decisions that fix it:
+
+- **One origin.** The client hardcodes `BASE = "/api/v1"` and derives its socket URL from
+  `window.location.host`, so a reverse proxy serving bundle and API together is the only arrangement
+  it runs in — and there is no CORS layer anywhere in the system (ADR-0030).
+- **One backend image**, four commands: app, worker, beat, and a one-shot `migrate` that runs exactly
+  once per release rather than once per container (ADR-0033, ADR-0036).
+- **Rollback is a deploy of an older SHA.** Compose pins the image tag and never `latest`, which is
+  what makes that true rather than hopeful.
+- **Shipping waits for a human.** CI builds on every green merge so the artifact always exists; the
+  deploy job sits behind a `production` environment with a required reviewer.
 
 ## API
 
@@ -251,6 +358,11 @@ frontend/
   src/realtime/  the WebSocket client and its mapping onto the query cache
   src/routes/    the screens
   src/money.ts   the decimal-string contract, on this side of the wire
+deploy/
+  compose.yml    the full stack: nginx, app, worker, beat, Postgres, Redis
+  nginx/         the proxy contract, the SPA fallback, the CSP, the JSON error page
+  *.sh           bootstrap, deploy, backup, restore
+  smoke_socket.py  the cross-process channel-layer proof CI runs
 ```
 
 ## Architecture decisions
