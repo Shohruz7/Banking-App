@@ -52,7 +52,14 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - id: resolve
-        run: echo "tag=${{ github.event.inputs.tag || github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "tag=${{ github.event.inputs.tag || github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+          # **Lowercased, and not for tidiness.** A Docker repository name must be lowercase — the
+          # daemon rejects `ghcr.io/Shohruz7/...` outright with "repository name must be lowercase"
+          # — while `github.repository_owner` preserves the account's display casing. Any owner with
+          # a capital letter in their username makes the obvious interpolation fail every time, and
+          # the error names the reference rather than the expression that produced it.
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -70,8 +77,8 @@ jobs:
           # Both a SHA and a moving `main`. The SHA is what compose pins and what a rollback names;
           # `main` exists only so a human can see at a glance what the latest build was.
           tags: |
-            ghcr.io/${{ github.repository_owner }}/banking-${{ matrix.name }}:${{ steps.resolve.outputs.tag }}
-            ghcr.io/${{ github.repository_owner }}/banking-${{ matrix.name }}:main
+            ghcr.io/${{ steps.resolve.outputs.owner }}/banking-${{ matrix.name }}:${{ steps.resolve.outputs.tag }}
+            ghcr.io/${{ steps.resolve.outputs.owner }}/banking-${{ matrix.name }}:main
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
