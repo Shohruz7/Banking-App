@@ -86,11 +86,24 @@ services:
     <<: *backend
     command: ["celery", "-A", "config", "worker", "--loglevel", "info", "--concurrency", "2"]
     healthcheck:
-      test: ["CMD", "celery", "-A", "config", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      # **CMD-SHELL, not CMD, and the difference is the whole check.** A worker's node name is
+      # `celery@<hostname>`, so the probe has to interpolate one. In exec form (`CMD`) there is no
+      # shell, so `$HOSTNAME` is passed through as four literal characters and the ping goes to a
+      # node that cannot exist — "No nodes replied within time constraint", forever, while the
+      # worker sits there perfectly healthy consuming tasks.
+      #
+      # Worse than a false negative on a dashboard: `docker compose up --wait` blocks on it, so the
+      # whole stack is reported as failed to start. That is exactly how CI caught this.
+      #
+      # `$$` is compose's escape for a literal `$` — it survives interpolation and reaches the shell,
+      # which is the thing that expands it.
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # Generous: a cold worker has to import Django, connect to the broker and register its queues
+      # before it can answer a ping, and failing during that is not the same as being unhealthy.
+      start_period: 60s
 
   beat:
     <<: *backend
