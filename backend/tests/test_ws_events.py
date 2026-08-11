@@ -2,7 +2,7 @@
 
 Two properties carry this file. Personal events reach exactly one user's socket — a fill is a fact
 about someone's money, and delivering it to the wrong group is a data breach with a websocket in
-front of it. And market data is gated by *subscription*, so the fan-out of a 55-symbol market is
+front of it. And market data is gated by *subscription*, so the fan-out of a 57-symbol market is
 bounded by what clients asked for rather than by how many are connected.
 """
 

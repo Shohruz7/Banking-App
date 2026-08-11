@@ -153,7 +153,7 @@ CHANNEL_LAYERS = {
 # legal first move is an auth frame; this is the budget for making it.
 WS_AUTH_DEADLINE_SECONDS = env.int("WS_AUTH_DEADLINE_SECONDS", default=5)
 
-# Per-socket price-subscription ceiling. A client watching a whole 55-symbol market is a chart
+# Per-socket price-subscription ceiling. A client watching a whole 57-symbol market is a chart
 # nobody is reading; the throttles (ADR-0015) cover HTTP, and this is the socket's equivalent.
 WS_MAX_SUBSCRIPTIONS = env.int("WS_MAX_SUBSCRIPTIONS", default=25)
 

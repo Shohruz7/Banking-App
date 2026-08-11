@@ -117,7 +117,7 @@ def publish_prices(ticks: Iterable[tuple[str, Decimal]]) -> None:
     """One message per symbol, to that symbol's group.
 
     Fan-out is bounded by *subscription*, not by client count: a group nobody has joined costs a
-    round trip to Redis and nothing else, so a 55-symbol market is 55 sends whether one client is
+    round trip to Redis and nothing else, so a 57-symbol market is 57 sends whether one client is
     watching or a thousand are.
     """
     at = timezone.now()

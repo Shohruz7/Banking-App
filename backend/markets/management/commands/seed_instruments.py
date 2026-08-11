@@ -1,4 +1,4 @@
-"""Seed the tradeable universe — 55 instruments across ten sectors.
+"""Seed the tradeable universe — 57 instruments across ten sectors.
 
 A management command rather than a data migration, deliberately: migrations are permanent and
 awkward to revise, and this list *will* be revised. ``update_or_create`` on the symbol makes reruns

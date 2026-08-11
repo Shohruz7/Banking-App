@@ -89,7 +89,7 @@ REALIZED_PNL_ACCOUNT_NAME = "Realized P&L"
 def position_account_for(user: User, instrument: Instrument) -> Account:
     """The user's position account for an instrument, created on first use (ADR-0016).
 
-    Created lazily rather than up front for all 55 instruments: a user who never trades should not
+    Created lazily rather than up front for all 57 instruments: a user who never trades should not
     carry 55 empty accounts, and the unique constraint on ``(owner, instrument)`` settles the race
     if two first buys arrive at once.
     """

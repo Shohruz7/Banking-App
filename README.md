@@ -82,7 +82,7 @@ entire token family, so the successor an attacker holds dies along with the one 
 TOTP secrets are envelope-encrypted at rest — a database dump is not an MFA bypass — under a key
 encryption key that can be rotated without a flag day, behind an interface a cloud KMS drops into.
 
-**Brokerage.** 55 seeded instruments whose prices walk under geometric Brownian motion, advanced on
+**Brokerage.** 57 seeded instruments whose prices walk under geometric Brownian motion, advanced on
 a schedule by Celery Beat. Market orders fill inside the request that places them; limit orders rest
 until a price tick crosses them and then fill unattended. **A fill is an ordinary journal entry** —
 a buy debits cash and credits a position account at cost. A sell is three lines, and the third is
@@ -188,7 +188,7 @@ nginx, gunicorn, a Celery worker, Beat, Postgres and Redis, all containerised:
 ```sh
 cp deploy/.env.example deploy/.env.ci     # fill in the two keys that have no defaults
 make up                                    # builds both images, waits for health
-make seed                                  # 55 instruments, then the demo dataset
+make seed                                  # 57 instruments, then the demo dataset
 ```
 
 Then <http://localhost:8080>, signing in as `demo` / `demo-password-1234`.
@@ -204,15 +204,19 @@ not close, because the test suite's channel layer is in-process.
 the application uses — `open_starter_accounts`, `transfer`, `place_order` — never through
 `post_entry` (ADR-0037). That is what makes it worth quoting:
 
+Measured from `seed_demo --seed 1` at its defaults, not estimated:
+
 | | |
 | --- | --- |
-| Customers | 260 |
-| Accounts | ~1,500 |
-| Journal entries | ~10,000 |
-| Journal lines | ~21,000 |
-| Orders | ~1,400 across 55 instruments |
-| Audit events | ~24,000 |
+| Customers | 400 |
+| Customer accounts | 800 checking/savings (2,427 ledger accounts in total) |
+| Journal entries | 13,011 |
+| Journal lines | 27,228 |
+| Orders | 1,600 placed — 1,206 filled, 296 resting, the rest rejected |
+| Instruments traded | 57, every one of them with a fill |
+| Audit events | 15,005 |
 | History | six months, backdated |
+| Runtime | ~30 seconds |
 
 Because it was written through the services, `manage.py check_ledger_invariants` over it is evidence
 about the application rather than about a fixture — and CI runs exactly that on every push.

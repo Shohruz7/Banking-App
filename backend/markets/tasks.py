@@ -84,7 +84,7 @@ def purge_price_ticks() -> dict[str, Any]:
 
     The one retention policy this system ships, and deliberately the only one. ``PriceTick`` is
     machine-generated market data with no personal content — a symbol, a number and a timestamp —
-    so deleting it raises none of the questions the other two candidates do. At 55 instruments on a
+    so deleting it raises none of the questions the other two candidates do. At 57 instruments on a
     sixty-second tick it is also the table that actually threatens the disk: roughly 79,000 rows a
     day, which is ~29M a year.
 
