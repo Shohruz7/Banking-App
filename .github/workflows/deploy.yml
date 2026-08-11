@@ -86,10 +86,24 @@ jobs:
     name: ship it
     needs: build
     runs-on: ubuntu-latest
-    # This is where the approval lives. `production` carries the SSH secrets *and* a required
-    # reviewer, so the job cannot even see the key until somebody says yes — which is a stronger
-    # gate than an `if:` anyone with write access could edit.
+
+    # **`environment:` alone gates nothing, and assuming otherwise is the mistake this comment
+    # exists to stop somebody repeating.** Naming an environment that does not exist makes GitHub
+    # create it silently, with no protection rules — so the first green CI run sent this job
+    # straight at an unconfigured host instead of waiting for anybody. The approval gate is a
+    # *repository setting*, not something a workflow file can assert, and a workflow that claims
+    # otherwise is worse than one that says nothing.
+    #
+    # Settings → Environments → production → Required reviewers. Until that is configured, the
+    # only thing standing between a merge and a production host is the variable below.
     environment: production
+
+    # Inert until a deploy target actually exists. `vars` rather than `secrets` because the secrets
+    # context is not available in a job-level `if` — and inert rather than failing because a red X
+    # on every push is how a team learns to stop reading CI.
+    #
+    #     gh variable set DEPLOY_ENABLED --body true
+    if: vars.DEPLOY_ENABLED == 'true'
 
     steps:
       - name: Deploy over SSH

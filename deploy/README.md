@@ -36,6 +36,19 @@ sudo certbot certonly --webroot -w /var/www/certbot -d bank.example.com
 ./deploy/deploy.sh <git-sha>
 ```
 
+### Turning the deploy workflow on
+
+Two settings, in this order, and the first is not optional:
+
+1. **Settings → Environments → production → Required reviewers.** `environment: production` in the
+   workflow does *not* create a protected environment — GitHub creates it unprotected on first use,
+   and the job runs unattended. This is the approval gate; the workflow cannot assert it.
+2. `gh secret set SSH_HOST --env production` (and `SSH_USER`, `SSH_KEY`), then
+   `gh variable set DEPLOY_ENABLED --body true`.
+
+Until step 2, the deploy job skips rather than failing, so `main` is not permanently red while the
+box does not exist.
+
 Sizing: **`t3.small` (2 GB), not `t3.micro`.** Steady state is roughly Postgres 200 MB + Redis 30 MB
 + two gunicorn workers 300 MB + Celery 150 MB + Beat 100 MB + nginx 10 MB ≈ 800 MB. The 2 GB swapfile
 `bootstrap.sh` adds is not for running the app; it is for the spikes — a `pg_dump` alongside

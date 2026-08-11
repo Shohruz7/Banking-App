@@ -241,8 +241,12 @@ The shape, and the decisions that fix it:
   once per release rather than once per container (ADR-0033, ADR-0036).
 - **Rollback is a deploy of an older SHA.** Compose pins the image tag and never `latest`, which is
   what makes that true rather than hopeful.
-- **Shipping waits for a human.** CI builds on every green merge so the artifact always exists; the
-  deploy job sits behind a `production` environment with a required reviewer.
+- **Building is automatic; shipping is not.** CI builds and pushes both images on every green merge,
+  so the artifact for any commit already exists when you want it — that is what makes a rollback
+  thirty seconds. The deploy job is inert until `DEPLOY_ENABLED` is set, and the approval gate
+  itself is a repository setting (Environments → production → Required reviewers) rather than
+  something this workflow can assert. Naming an environment in a workflow file does not create one
+  with protection rules; GitHub creates it unprotected, which is a trap worth knowing about.
 
 ## API
 
