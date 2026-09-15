@@ -46,3 +46,7 @@ Documentation/*.md
 .idea/
 .vscode/
 *.swp
+
+# Minted access tokens for the load harness. 360 live JWTs bound to real sessions — regenerated
+# by `make load` on every run, and never something to commit.
+deploy/loadtest/tokens.json
