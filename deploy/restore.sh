@@ -21,9 +21,25 @@ if [[ -z "$ARCHIVE" ]]; then
 fi
 
 cd "$(dirname "$0")/.."
-COMPOSE=(docker compose -f deploy/compose.yml --env-file deploy/.env)
+
+# Which stack to act on. The defaults are the production compose file and its `.env`, which is what
+# the cron entry and the runbook use. They are overridable for one reason: the restore drill below is
+# only worth anything if it has actually been rehearsed, and rehearsing it on a laptop means pointing
+# at the CI-shaped stack `make up` brings up, where `deploy/.env` does not exist.
+#
+#     ENV_FILE=deploy/.env.ci COMPOSE_OVERRIDE=deploy/compose.ci.yml \
+#       ./deploy/restore.sh /tmp/banking-backups/db-<stamp>.dump.gpg
+ENV_FILE="${ENV_FILE:-deploy/.env}"
+COMPOSE=(docker compose -f deploy/compose.yml)
+# An `if` rather than `[[ ... ]] && ...`: under `set -e` the short-circuit form evaluates to 1 when
+# the variable is unset, which is harmless here only because another statement follows it.
+if [[ -n "${COMPOSE_OVERRIDE:-}" ]]; then
+    COMPOSE+=(-f "$COMPOSE_OVERRIDE")
+fi
+COMPOSE+=(--env-file "$ENV_FILE")
+
 # shellcheck disable=SC1091
-source deploy/.env
+source "$ENV_FILE"
 
 TARGET="${2:-banking_restore_check}"
 WORK="$(mktemp -d)"
@@ -53,6 +69,24 @@ UNION ALL SELECT 'journal lines',   count(*) FROM ledger_journalline
 UNION ALL SELECT 'orders',          count(*) FROM trading_order
 UNION ALL SELECT 'audit events',    count(*) FROM audit_auditevent;
 "
+
+# Row counts prove the dump *arrived*. They do not prove it arrived **consistent** — a dump taken
+# while the application is writing can land mid-transaction, and the shape of that damage is
+# precisely what this ledger's invariants describe: an entry whose amounts no longer sum to zero,
+# an instrument whose shares no longer net, a holding gone negative. Running the real checker
+# against the scratch copy is the difference between "the file restored" and "the data is sound",
+# and it costs one container.
+#
+# `--no-deps` because the dependencies are already up — without it compose re-runs the one-shot
+# `migrate` service against the *live* database, which is not what a restore drill should touch.
+#
+# Set VERIFY_INVARIANTS=0 to skip, for a recovery where the application image is not to hand.
+if [[ "${VERIFY_INVARIANTS:-1}" == "1" ]]; then
+    echo "→ checking ledger invariants on the restored copy"
+    "${COMPOSE[@]}" run --rm --no-deps \
+        -e "DATABASE_URL=${DATABASE_URL%/*}/${TARGET}" \
+        app python manage.py check_ledger_invariants
+fi
 
 echo
 echo "Compare those against production. If they match, the backup is real."

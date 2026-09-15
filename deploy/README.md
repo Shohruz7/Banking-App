@@ -118,11 +118,46 @@ to `BACKUP_S3_URI`. **The media half is why ADR-0039 could decline S3 storage**:
 PDFs on a local volume is only defensible if they leave the box on a schedule. Without this script,
 "we chose FileSystemStorage" would just mean "we chose one disk".
 
-**Run `./deploy/restore.sh` once, this week, against a real backup.** Every way a backup fails is
-silent — a dump truncated by a full disk, a passphrase nobody wrote down, a `pg_dump` that has been
-producing zero bytes since a container was renamed. It restores into a scratch database and prints
-row counts to compare against production; it does not touch the live one, because recovering for real
-should be a decision somebody makes at a keyboard.
+`restore.sh` restores into a **scratch** database, prints row counts, and then runs
+`check_ledger_invariants` against the restored copy. It never touches the live database — recovering
+for real is the same `pg_restore` with `--dbname` pointed at production, and that should be a
+decision somebody makes at a keyboard. The invariant check is the part that matters: row counts
+prove the dump arrived, not that it arrived *consistent*, and a dump that lands mid-transaction is
+damaged in exactly the shape this ledger's invariants describe.
+
+### The drill, run
+
+Rehearsed against the full seeded dataset on the local stack. Both scripts take `ENV_FILE` and
+`COMPOSE_OVERRIDE` so the drill can point at the CI-shaped stack `make up` brings up:
+
+```sh
+make up && make seed
+export BACKUP_PASSPHRASE=...        # any passphrase; this copy is thrown away
+env BACKUP_DIR=/tmp/banking-drill ENV_FILE=deploy/.env.ci \
+    COMPOSE_OVERRIDE=deploy/compose.ci.yml ./deploy/backup.sh
+env ENV_FILE=deploy/.env.ci COMPOSE_OVERRIDE=deploy/compose.ci.yml \
+    ./deploy/restore.sh /tmp/banking-drill/db-<stamp>.dump.gpg
+```
+
+| | |
+|---|---|
+| Dump size (encrypted) | 2.8 MB |
+| Rows recovered | 401 users · 2,427 accounts · 13,011 entries · 27,228 lines · 1,600 orders · 15,005 audit events |
+| Row counts vs. source | identical on all six |
+| Invariants on the restored copy | hold |
+| Wall clock, decrypt → restore → verify | **~1.7 s** |
+
+That number is not an RTO and should not be quoted as one. At this data size the restore is
+dominated by process startup — `pg_restore` itself is ~0.3 s, and turning `fsync` back on changes
+nothing measurable. What the drill establishes is that the path works end to end and that the
+backup is real; the recovery time that would matter on a bad day is dominated by provisioning a
+box, not by moving 2.8 MB.
+
+**The first run found two bugs, which is the entire argument for running it.** `gpg` failing left
+the plaintext dump — every account number and TOTP secret in the system — sitting in `BACKUP_DIR`
+while the script aborted under `set -e`; there is now a `trap` that removes it on any path that is
+not a successful encryption. And the log timestamps used `date -uIs`, a GNU extension that prints
+an error on BSD date, so the drill could not be rehearsed cleanly on a laptop at all.
 
 ### Re-seeding
 
