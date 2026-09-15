@@ -44,9 +44,11 @@ BARRIER_TIMEOUT = 10
 #: rather than by design would pass. Sixteen puts fifteen transactions on the wait queue behind the
 #: winner, which is where an ordering mistake or a missed ``FOR UPDATE`` actually surfaces.
 #:
-#: The ceiling is Postgres connections: each thread opens its own (``django_db(transaction=True)``
-#: requires it) and the default ``max_connections`` is 100, shared with the test runner's own
-#: connection and any leaked from an earlier failure. Sixteen leaves the margin comfortable.
+#: The ceiling is connections: each thread opens its own (``django_db(transaction=True)`` requires
+#: it). Since the connection pool was introduced the binding limit is ``DB_POOL_MAX`` — 20 per
+#: process, well below Postgres's own 100 — so raising this constant past 20 does not raise
+#: contention, it just makes threads queue on the pool for up to ``DB_POOL_TIMEOUT``. Raise both or
+#: neither. Sixteen leaves the margin comfortable.
 #:
 #: Must equal ``ThreadPoolExecutor(max_workers=...)`` everywhere it is used: a pool smaller than the
 #: barrier's party count can never release it, which is a hang, not a failure.

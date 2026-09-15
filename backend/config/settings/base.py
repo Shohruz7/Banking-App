@@ -92,11 +92,41 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASES = {
     "default": env.db("DATABASE_URL", default="postgres://banking:banking@localhost:5432/banking"),
 }
-# Reuse connections rather than opening one per request. Postgres connection setup is not free and
-# every request in this app makes several queries; 0 (the default) pays that cost every time.
-# CONN_HEALTH_CHECKS is what makes reuse safe: without it a connection killed by a restart or a
-# failover is handed to a request that then fails, once, for no reason it can act on.
-DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
+# Connection handling under ASGI is not the WSGI story, and assuming it was cost real 500s.
+#
+# Django's ASGI handler runs each sync view in its own thread, and a Django database connection is
+# thread-local — so the number of connections this process holds is bounded by how many requests are
+# *in flight*, not by the worker count. With `CONN_MAX_AGE` then holding each of those open for a
+# further 60 seconds, a load run at 100 concurrent readers against two gunicorn workers took
+# Postgres past its 100-connection ceiling, and roughly 5% of requests came back as:
+#
+#     psycopg.OperationalError: connection failed: FATAL: sorry, too many clients already
+#
+# A pool is the fix, rather than a larger `max_connections`. Raising the ceiling moves the cliff;
+# the pool removes it, by bounding what one process can hold and making an overloaded app *queue*
+# for a connection instead of failing to get one. Django 5.1+ wires psycopg 3's pool through
+# OPTIONS and refuses to combine it with persistent connections — hence CONN_MAX_AGE = 0 below,
+# which gives up nothing, because reuse is now the pool's job and it does it better.
+#
+# `max_size` is per **process**. Two gunicorn workers, a Celery worker and Beat share one server, so
+# it is sized to leave room rather than to claim the lot. `timeout` bounds the queueing: a request
+# that cannot get a connection in 10 seconds should fail rather than hold a thread indefinitely.
+if env.bool("DB_POOL", default=True):
+    DATABASES["default"]["OPTIONS"] = {
+        **DATABASES["default"].get("OPTIONS", {}),
+        "pool": {
+            "min_size": env.int("DB_POOL_MIN", default=2),
+            "max_size": env.int("DB_POOL_MAX", default=20),
+            "timeout": env.int("DB_POOL_TIMEOUT", default=10),
+        },
+    }
+    DATABASES["default"]["CONN_MAX_AGE"] = 0
+else:
+    # The pre-pool arrangement, kept reachable for the test suite and for a WSGI deployment, where
+    # per-request connections really are the cost worth avoiding. CONN_HEALTH_CHECKS is what makes
+    # that reuse safe: without it a connection killed by a restart is handed to a request that then
+    # fails, once, for no reason it can act on.
+    DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
 DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
 # Three Redis clients, three logical databases. They shared DB 0 until Week 7, which meant a
