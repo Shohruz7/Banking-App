@@ -42,6 +42,14 @@ _TIMEOUT = 20
 #: machine, short enough that a real deadlock fails the test instead of the build.
 BARRIER_TIMEOUT = 10
 
+#: How many threads race for each contended resource. See ``tests/test_concurrency.py`` for the
+#: reasoning — briefly: two proves the property exists without exercising it, sixteen puts fifteen
+#: transactions on the wait queue behind the winner, and the ceiling is Postgres connections.
+#:
+#: Must equal ``ThreadPoolExecutor(max_workers=...)`` everywhere it is used: a pool smaller than the
+#: barrier's party count can never release it, which is a hang, not a failure.
+CONCURRENCY = 16
+
 
 def market_order(user: User, instrument: object, cash: object, side: str, quantity: str) -> None:
     place_order(
@@ -56,18 +64,18 @@ def market_order(user: User, instrument: object, cash: object, side: str, quanti
 
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_buys_cannot_overdraw_cash() -> None:
-    """$1,000 of cash, two simultaneous $800 buys. Exactly one can succeed.
+    """$1,000 of cash, sixteen simultaneous $800 buys. Exactly one can succeed.
 
-    Without the lock both threads read $1,000, both decide they can afford it, and the account ends
-    up at −$600 — money created out of nothing, which the zero-sum trigger cannot catch because
-    each entry balances perfectly on its own.
+    Without the lock every thread reads $1,000, every thread decides it can afford $800, and the
+    account ends up at −$11,800 — money created out of nothing, which the zero-sum trigger cannot
+    catch because each entry balances perfectly on its own.
     """
     user = UserFactory.create()
     instrument = InstrumentFactory.create(initial_price=Decimal("100.0000"))
     cash = AccountFactory.create(owner=user)
     fund_account(cash, Decimal("1000.00"))
 
-    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
+    barrier = threading.Barrier(CONCURRENCY, timeout=BARRIER_TIMEOUT)
 
     def attempt() -> str:
         try:
@@ -79,25 +87,26 @@ def test_concurrent_buys_cannot_overdraw_cash() -> None:
         finally:
             connection.close()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(attempt), pool.submit(attempt)]
-        outcomes = sorted(future.result(timeout=_TIMEOUT) for future in futures)
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        futures = [pool.submit(attempt) for _ in range(CONCURRENCY)]
+        outcomes = [future.result(timeout=_TIMEOUT) for future in futures]
 
-    assert outcomes == ["filled", "rejected"]
+    assert outcomes.count("filled") == 1
+    assert outcomes.count("rejected") == CONCURRENCY - 1
     assert get_balance(cash) == Decimal("200.0000")
     assert get_quantity(position_account_for(user, instrument)) == Decimal("8.00000000")
 
 
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_sells_cannot_oversell_shares() -> None:
-    """The same race on the quantity side: 8 shares held, two simultaneous sells of 5."""
+    """The same race on the quantity side: 8 shares held, sixteen simultaneous sells of 5."""
     user = UserFactory.create()
     instrument = InstrumentFactory.create(initial_price=Decimal("100.0000"))
     cash = AccountFactory.create(owner=user)
     fund_account(cash, Decimal("100.00"))
     give_shares(user, instrument, Decimal("8"), Decimal("800.00"))
 
-    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
+    barrier = threading.Barrier(CONCURRENCY, timeout=BARRIER_TIMEOUT)
 
     def attempt() -> str:
         try:
@@ -109,11 +118,12 @@ def test_concurrent_sells_cannot_oversell_shares() -> None:
         finally:
             connection.close()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(attempt), pool.submit(attempt)]
-        outcomes = sorted(future.result(timeout=_TIMEOUT) for future in futures)
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        futures = [pool.submit(attempt) for _ in range(CONCURRENCY)]
+        outcomes = [future.result(timeout=_TIMEOUT) for future in futures]
 
-    assert outcomes == ["filled", "rejected"]
+    assert outcomes.count("filled") == 1
+    assert outcomes.count("rejected") == CONCURRENCY - 1
     # 3 shares left, and never a negative holding — there is no short selling here.
     assert get_quantity(position_account_for(user, instrument)) == Decimal("3.00000000")
 
@@ -155,13 +165,17 @@ def test_lock_accounts_acquires_in_ascending_order_whatever_the_caller_says() ->
 
 @pytest.mark.django_db(transaction=True)
 def test_a_trade_and_a_transfer_on_one_account_settle_correctly() -> None:
-    """Two different writers contending on the same cash account produce consistent balances.
+    """Sixteen writers of two different kinds, contending on one cash account, still balance.
 
-    Note what this does *not* prove: a fill locks {cash, position} and a transfer locks {cash,
-    other}, so they share exactly one row — and two transactions contending on a single row cannot
-    deadlock, they queue. The ordering guarantee is asserted by
-    :func:`test_lock_accounts_acquires_in_ascending_order_whatever_the_caller_says` above; this test
-    proves the two paths interleave without losing money.
+    Eight fills and eight transfers, released together. Note what this does *not* prove: a fill
+    locks {cash, position} and a transfer locks {cash, other}, so they share exactly one row — and
+    transactions contending on a single row cannot deadlock, they queue. The ordering guarantee is
+    asserted by :func:`test_lock_accounts_acquires_in_ascending_order_whatever_the_caller_says`
+    above; this test proves the two paths interleave without losing money, at a queue depth where
+    a lost update would actually have somewhere to hide.
+
+    Sized so no leg can be rejected whatever order they land in: eight buys of $100 against an
+    opening $5,000 is $4,200 at worst, so every leg must post and the totals are exact.
     """
     user = UserFactory.create()
     instrument = InstrumentFactory.create(initial_price=Decimal("100.0000"))
@@ -170,12 +184,12 @@ def test_a_trade_and_a_transfer_on_one_account_settle_correctly() -> None:
     fund_account(cash, Decimal("5000.00"))
     fund_account(other, Decimal("5000.00"))
 
-    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
+    barrier = threading.Barrier(CONCURRENCY, timeout=BARRIER_TIMEOUT)
 
     def buy() -> None:
         try:
             barrier.wait(timeout=_TIMEOUT)
-            market_order(user, instrument, cash, OrderSide.BUY, "10")
+            market_order(user, instrument, cash, OrderSide.BUY, "1")
         finally:
             connection.close()
 
@@ -186,21 +200,23 @@ def test_a_trade_and_a_transfer_on_one_account_settle_correctly() -> None:
         finally:
             connection.close()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(buy), pool.submit(move)]
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        futures = [
+            pool.submit(buy) if leg % 2 == 0 else pool.submit(move) for leg in range(CONCURRENCY)
+        ]
         for future in futures:
             # A deadlock surfaces here — as a Postgres error, or as this timeout.
             future.result(timeout=_TIMEOUT)
 
-    # Both completed: $5000 − $1000 of shares + $100 transferred in.
-    assert get_balance(cash) == Decimal("4100.0000")
-    assert get_balance(other) == Decimal("4900.0000")
-    assert get_quantity(position_account_for(user, instrument)) == Decimal("10.00000000")
+    # All sixteen completed: $5000 − 8×$100 of shares + 8×$100 transferred in.
+    assert get_balance(cash) == Decimal("5000.0000")
+    assert get_balance(other) == Decimal("4200.0000")
+    assert get_quantity(position_account_for(user, instrument)) == Decimal("8.00000000")
 
 
 @pytest.mark.django_db(transaction=True)
 def test_racing_fills_on_one_order_post_a_single_entry() -> None:
-    """Two sweeps grabbing the same resting order produce one fill, not two.
+    """Sixteen sweeps grabbing the same resting order produce one fill, not sixteen.
 
     Defence in depth: ``select_for_update(skip_locked=True)`` means the loser skips the order
     entirely, and the entry's ``order:{id}`` idempotency key would stop a double posting even if it
@@ -223,7 +239,7 @@ def test_racing_fills_on_one_order_post_a_single_entry() -> None:
         limit_price=Decimal("100"),
     )
 
-    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
+    barrier = threading.Barrier(CONCURRENCY, timeout=BARRIER_TIMEOUT)
 
     def sweep() -> dict[str, int]:
         try:
@@ -232,8 +248,8 @@ def test_racing_fills_on_one_order_post_a_single_entry() -> None:
         finally:
             connection.close()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(sweep), pool.submit(sweep)]
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        futures = [pool.submit(sweep) for _ in range(CONCURRENCY)]
         results = [future.result(timeout=_TIMEOUT) for future in futures]
 
     assert sum(result["filled"] for result in results) == 1
