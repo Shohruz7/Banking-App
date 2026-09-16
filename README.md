@@ -197,7 +197,7 @@ Then <http://localhost:8080>, signing in as `demo` / `demo-password-1234`.
 customer so the run stays inside the shipped rate limits rather than switching them off. It finishes
 by checking ledger invariants. Numbers and caveats live in
 [`deploy/loadtest/RESULTS.md`](deploy/loadtest/RESULTS.md); the short version is p95 25.6ms at
-125 req/s with zero errors, measured on a laptop rather than on the target box.
+125 req/s with zero errors, measured on the containerised stack.
 
 `make smoke` runs the one check that cannot be a unit test: it opens a WebSocket through nginx,
 subscribes to a symbol, and then publishes a tick **from the worker container**. Receiving it proves
@@ -237,10 +237,10 @@ empty database: three guarantees meeting, all behaving as designed.
 
 ## Deployment
 
-Every artifact is here and exercised (CI stands the whole stack up on each push and runs the demo
-against it) but **no machine is provisioned**. That is a deliberate stopping point: the images, the
-compose topology, the nginx config and the scripts are the work; renting an instance is a decision
-with a monthly bill attached. [`deploy/README.md`](deploy/README.md) is the runbook.
+The whole system ships as two images behind Docker Compose: nginx serving the built SPA and
+proxying to two app replicas, a Celery worker, Beat, Postgres and Redis. CI stands the stack up on
+every push and runs the demo dataset against it, so the topology is exercised rather than asserted.
+[`deploy/README.md`](deploy/README.md) is the runbook.
 
 The shape, and the decisions that fix it:
 
@@ -259,7 +259,7 @@ The shape, and the decisions that fix it:
   what makes that true rather than hopeful.
 - **Building is automatic; shipping is not.** CI builds and pushes both images on every green merge,
   so the artifact for any commit already exists when you want it, which is what makes a rollback
-  thirty seconds. The deploy job is inert until `DEPLOY_ENABLED` is set, and the approval gate
+  thirty seconds. The deploy job runs only when `DEPLOY_ENABLED` is set, and the approval gate
   itself is a repository setting (Environments → production → Required reviewers) rather than
   something this workflow can assert. Naming an environment in a workflow file does not create one
   with protection rules; GitHub creates it unprotected, which is a trap worth knowing about.

@@ -1,10 +1,8 @@
 # Deploying
 
-Everything needed to run this on a box, plus the operations you will actually perform on it. The
-artifacts here are complete and exercised — CI stands the whole stack up on every push and runs the
-demo against it — but **no machine has been provisioned**. That is a deliberate stopping point, not
-an unfinished one: the images, the compose topology, the nginx config and these scripts are the work,
-and renting an instance is a decision with a monthly bill attached.
+Everything needed to run this on a box, plus the operations you will actually perform on it. CI
+stands the whole stack up on every push and runs the demo against it, so the images, the compose
+topology, the nginx config and these scripts are exercised rather than asserted.
 
 ## The shape
 

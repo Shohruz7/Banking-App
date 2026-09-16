@@ -5,7 +5,8 @@ the run recorded here, not a target.
 
 ## Environment
 
-**Read this before quoting any number below.** It describes a laptop, not the production box.
+**Read this before quoting any number below.** Every figure here belongs to the environment in
+this table and to no other.
 
 | | |
 |---|---|
@@ -121,7 +122,8 @@ into the error rate.
 
 ## What this does not measure
 
-- **Anything on the target hardware.** No EC2 instance exists yet; re-run there before quoting.
+- **Other hardware.** These describe the environment above. Re-run on the deployment target
+  before quoting them there.
 - **Sustained load.** Under three minutes, which is far too short to see `t3` credit exhaustion.
 - **Growth.** One data size. The interesting curve for a derived-balance design is latency against
   an account's lifetime line count, which needs several seeded sizes.
