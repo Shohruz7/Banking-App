@@ -20,7 +20,9 @@ images:  ## Build both images
 
 up: images  ## Bring the full stack up on http://localhost:8080
 	@test -f deploy/.env.ci || { echo "deploy/.env.ci is missing — copy deploy/.env.example and fill it in"; exit 1; }
-	$(COMPOSE) up -d --wait --wait-timeout 180
+	@# --remove-orphans so a service that has been renamed or dropped does not leave a container
+	@# behind holding the network open. deploy.sh does the same, for the same reason.
+	$(COMPOSE) up -d --wait --wait-timeout 180 --remove-orphans
 	@echo "→ http://localhost:8080"
 
 down:  ## Stop the stack and delete its volumes
@@ -33,17 +35,17 @@ ps:  ## What is running
 	$(COMPOSE) ps
 
 shell:  ## A Django shell in the app container
-	$(COMPOSE) exec app python manage.py shell
+	$(COMPOSE) exec app_blue python manage.py shell
 
 migrate:  ## Apply migrations
-	$(COMPOSE) exec app python manage.py migrate
+	$(COMPOSE) exec app_blue python manage.py migrate
 
 seed:  ## Seed the market and the demo dataset
-	$(COMPOSE) exec app python manage.py seed_instruments --ticks 180 --seed 1
-	$(COMPOSE) exec app python manage.py seed_demo --seed 1
+	$(COMPOSE) exec app_blue python manage.py seed_instruments --ticks 180 --seed 1
+	$(COMPOSE) exec app_blue python manage.py seed_demo --seed 1
 
 smoke:  ## Prove a worker-published tick reaches a socket held by the app
-	$(COMPOSE) exec -T app python manage.py shell --no-imports \
+	$(COMPOSE) exec -T app_blue python manage.py shell --no-imports \
 	  -c "from markets.models import Instrument; print(Instrument.objects.filter(is_active=True).first().symbol)" \
 	  | tr -d '\r' > /tmp/banking-symbol
 	@python deploy/smoke_socket.py --base http://localhost:8080 \
@@ -55,7 +57,7 @@ smoke:  ## Prove a worker-published tick reaches a socket held by the app
 
 load:  ## Load-test the running stack through nginx, inside its own rate limits
 	@test -f deploy/loadtest/api.js || { echo "deploy/loadtest/api.js is missing"; exit 1; }
-	$(COMPOSE) exec -T app python manage.py shell --no-imports \
+	$(COMPOSE) exec -T app_blue python manage.py shell --no-imports \
 	  < deploy/loadtest/mint_tokens.py > deploy/loadtest/tokens.json
 	@# `--network banking_default` because compose.yml names the project `banking`. Reaching `web`
 	@# by service name rather than the published port keeps Docker Desktop's userland port forward —
@@ -67,7 +69,7 @@ load:  ## Load-test the running stack through nginx, inside its own rate limits
 	  -e RUN_ID="$$(date +%s)" \
 	  grafana/k6 run /loadtest/api.js
 	@# The half of the claim that makes it a *banking* latency number: the ledger still balances.
-	$(COMPOSE) exec -T app python manage.py check_ledger_invariants
+	$(COMPOSE) exec -T app_blue python manage.py check_ledger_invariants
 
 test:  ## Both suites
 	cd backend && uv run pytest -q

@@ -85,7 +85,7 @@ if [[ "${VERIFY_INVARIANTS:-1}" == "1" ]]; then
     echo "→ checking ledger invariants on the restored copy"
     "${COMPOSE[@]}" run --rm --no-deps \
         -e "DATABASE_URL=${DATABASE_URL%/*}/${TARGET}" \
-        app python manage.py check_ledger_invariants
+        app_blue python manage.py check_ledger_invariants
 fi
 
 echo

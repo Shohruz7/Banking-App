@@ -111,8 +111,8 @@ def main() -> int:
                     flush=True,
                 )
                 print(
-                    "  Published by the Celery worker, delivered to a socket held by the app "
-                    "container, through nginx. The Redis channel layer crosses processes.",
+                    "  Published by the Celery worker, delivered to a socket held by one of the "
+                    "app replicas, through nginx. The Redis channel layer crosses processes.",
                     flush=True,
                 )
                 return 0

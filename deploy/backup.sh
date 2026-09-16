@@ -58,7 +58,9 @@ echo "[$(date -u +%FT%TZ)] backup ${STAMP} starting"
     pg_dump -U "${POSTGRES_USER:-banking}" -d "${POSTGRES_DB:-banking}" -Fc \
     > "${BACKUP_DIR}/db-${STAMP}.dump"
 
-"${COMPOSE[@]}" exec -T app tar -czf - -C /app media \
+# app_blue rather than app_green for no reason beyond needing to pick one: both mount the
+# same `media` volume, so either sees the same files.
+"${COMPOSE[@]}" exec -T app_blue tar -czf - -C /app media \
     > "${BACKUP_DIR}/media-${STAMP}.tar.gz"
 
 if [[ -n "${BACKUP_PASSPHRASE:-}" ]]; then
