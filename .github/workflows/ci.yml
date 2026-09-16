@@ -288,7 +288,7 @@ jobs:
       - name: Static files are served at their manifest-hashed URL
         run: |
           url=$(docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci \
-            exec -T app python manage.py shell --no-imports \
+            exec -T app_blue python manage.py shell --no-imports \
             -c "from django.templatetags.static import static; print(static('admin/css/base.css'))" | tr -d '\r')
           echo "manifest says: $url"
           case "$url" in
@@ -309,7 +309,7 @@ jobs:
       - name: The seeded ledger holds its invariants
         run: |
           docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci \
-            exec -T app python manage.py check_ledger_invariants
+            exec -T app_blue python manage.py check_ledger_invariants
 
       - name: A seeded customer can authenticate through nginx
         run: |
@@ -329,7 +329,7 @@ jobs:
         run: |
           pip install --quiet 'websockets>=13'
           symbol=$(docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci \
-            exec -T app python manage.py shell --no-imports -c "from markets.models import Instrument; print(Instrument.objects.filter(is_active=True).first().symbol)" | tr -d '\r')
+            exec -T app_blue python manage.py shell --no-imports -c "from markets.models import Instrument; print(Instrument.objects.filter(is_active=True).first().symbol)" | tr -d '\r')
           echo "watching $symbol"
 
           python deploy/smoke_socket.py \
@@ -347,12 +347,96 @@ jobs:
 
           wait $watcher
 
+      # The two addresses are a two-place invariant — nginx names them literally because an upstream
+      # hostname cannot be re-resolved (ADR-0043), and compose pins them. Disagreement is a total
+      # outage on the next deploy, so it is cheaper to assert than to discover.
+      - name: nginx and compose agree on the replica addresses
+        run: |
+          for ip in 10.99.0.11 10.99.0.12; do
+            grep -q "server ${ip}:8000" deploy/nginx/nginx.conf \
+              || { echo "nginx.conf is missing upstream ${ip}"; exit 1; }
+            grep -q "ipv4_address: ${ip}" deploy/compose.yml \
+              || { echo "compose.yml is missing ipv4_address ${ip}"; exit 1; }
+          done
+          echo "both files agree"
+
+      # The claim ADR-0043 makes, tested rather than asserted: a full blue→green swap under
+      # continuous traffic drops nothing.
+      - name: A rolling swap drops no request
+        run: |
+          pip install --quiet requests
+          token=$(curl -fsS -X POST http://localhost:8080/api/v1/auth/token/ \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"demo","password":"demo-password-1234"}' \
+            | python -c 'import sys,json; print(json.load(sys.stdin)["access"])')
+
+          rm -f /tmp/stop-probe /tmp/probe.json
+          TOKEN="$token" python .github/scripts/swap_proof.py /tmp/stop-probe /tmp/probe.json &
+          probe=$!
+          sleep 3
+
+          for replica in app_blue app_green; do
+            echo "--- rolling ${replica} ---"
+            docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci \
+              up -d --no-deps --force-recreate --wait --wait-timeout 150 "$replica"
+            sleep 5
+          done
+
+          touch /tmp/stop-probe
+          wait $probe
+
+          python - <<'PY'
+          import json
+          result = json.load(open("/tmp/probe.json"))
+          print(f"total={result['total']} failures={len(result['failures'])}")
+          for failure in result["failures"]:
+              print("  ", failure)
+          # Both halves matter. Zero failures alone would also be true of a probe that died on its
+          # first request, so the count is asserted too.
+          # A floor, not a target: enough to prove the probe lived across both recreates rather
+          # than dying on request one. The pace is fixed by the throttle, so the count is really a
+          # function of how long a container takes to come up on this runner.
+          assert result["total"] > 50, f"probe only made {result['total']} requests"
+          assert not result["failures"], "requests were dropped during the swap"
+          PY
+
+      # The deterministic half of the claim. The swap probe above depends on timing — it can only
+      # catch a gap it happens to sample — whereas this holds one replica down for the whole check,
+      # so `proxy_next_upstream` either routes around a dead peer or it does not.
+      - name: One replica down still serves
+        run: |
+          C="docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci"
+          token=$(curl -fsS -X POST http://localhost:8080/api/v1/auth/token/ \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"demo","password":"demo-password-1234"}' \
+            | python -c 'import sys,json; print(json.load(sys.stdin)["access"])')
+
+          $C stop app_blue
+          failures=0
+          for _ in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $token" http://localhost:8080/api/v1/accounts/)
+            [ "$code" = "200" ] || { echo "got $code with app_green alive"; failures=$((failures+1)); }
+            sleep 0.3   # under the 240/min read budget, or the probe throttles itself
+          done
+          $C start app_blue
+          test "$failures" -eq 0
+
+      # If the keepalive race ever double-posted a transfer, this is the assertion that names it.
+      - name: The ledger still balances after the swap
+        run: |
+          docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci \
+            exec -T app_blue python manage.py check_ledger_invariants
+
       # A dead backend must still speak the ADR-0006 envelope: the client parses `response.json()`
       # unconditionally, so nginx's HTML error page would arrive as a parse failure rather than as
       # an outage the UI can describe.
+      #
+      # Both replicas, because with two of them stopping one proves nothing — the other answers,
+      # which is the point of the step above. The envelope contract is about having *no* backend.
       - name: An outage is still JSON
         run: |
-          docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci stop app
+          docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci stop app_blue app_green
           sleep 3
           code=$(curl -s -o /tmp/body -w '%{http_code}' http://localhost:8080/api/v1/accounts/)
           cat /tmp/body; echo
