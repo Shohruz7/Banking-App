@@ -41,6 +41,7 @@ COPY deploy/nginx/app.conf.template /etc/nginx/templates/app.conf.template
 COPY deploy/nginx/admin-allowlist.conf /etc/nginx/admin-allowlist.conf
 # A plain include rather than a template: it uses nginx's own $host, which needs no substitution.
 COPY deploy/nginx/security-headers.conf /etc/nginx/security-headers.conf
+COPY deploy/nginx/proxy-headers.conf /etc/nginx/proxy-headers.conf
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 

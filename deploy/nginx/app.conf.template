@@ -18,14 +18,10 @@ server {
 
     # --- the proxy contract, shared by every proxied location below ------------------------------
 
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    # What SECURE_PROXY_SSL_HEADER reads. Without it Django believes every request arrived over
-    # plain HTTP and SECURE_SSL_REDIRECT answers with a redirect to https — which arrives here
-    # again, and redirects again. An infinite loop that only appears once TLS terminates upstream.
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Request-ID $request_id_final;
+    # Included rather than written here, and included again inside every location that proxies.
+    # `proxy_set_header` does not inherit into a block that declares any of its own, and all four
+    # proxied locations below declare one — so this line alone reaches none of them. See the file.
+    include /etc/nginx/proxy-headers.conf;
     proxy_redirect off;
 
     # --- failing over between the two app replicas (ADR-0043) -------------------------------
@@ -79,6 +75,7 @@ server {
 
     location /api/ {
         proxy_pass http://app;
+        include /etc/nginx/proxy-headers.conf;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_read_timeout 60s;
@@ -93,6 +90,7 @@ server {
 
     location /ws/ {
         proxy_pass http://app;
+        include /etc/nginx/proxy-headers.conf;
         # The three lines that make an upgrade work. HTTP/1.1 because 1.0 has no Upgrade, and the
         # Connection header must be literally "upgrade" — not the keepalive "" used for /api/.
         proxy_http_version 1.1;
@@ -108,6 +106,7 @@ server {
     # image (ADR-0035).
     location /static/ {
         proxy_pass http://app;
+        include /etc/nginx/proxy-headers.conf;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
     }
@@ -118,6 +117,7 @@ server {
     location /admin/ {
         include /etc/nginx/admin-allowlist.conf;
         proxy_pass http://app;
+        include /etc/nginx/proxy-headers.conf;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
     }

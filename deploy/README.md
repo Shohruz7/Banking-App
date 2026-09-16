@@ -73,7 +73,7 @@ and TOTP secret in the database — the ciphertext survives and nothing can read
 |---|---|
 | `DB_SSLMODE=disable` | `prod.py` defaults to `require`, which is right when the database is on another host. Here it is a container on this host's private bridge with no published port, and `postgres:16-alpine` ships no certificate, so `require` simply fails to connect. Set it back to `require` the day the database leaves this box. |
 | `CSRF_TRUSTED_ORIGINS` | The SPA uses bearer tokens and does not care. **Django admin login 403s without it** the moment it is behind a proxy. Scheme included, no path. |
-| `DJANGO_ALLOWED_HOSTS` includes `localhost` | Each app replica's healthcheck requests `http://127.0.0.1:8000/api/v1/ready/`, and Django rejects a Host it does not recognise. Safe: the container publishes no ports. |
+| `DJANGO_ALLOWED_HOSTS` includes `localhost` and `127.0.0.1` | Each app replica's healthcheck requests `http://127.0.0.1:8000/api/v1/ready/`, and Django rejects a Host it does not recognise. Safe: the container publishes no ports. **Do not add an nginx upstream name here.** If requests arrive with `Host: app`, `proxy-headers.conf` is not being included in the location that served them — adding the name papers over that and takes `X-Forwarded-Proto`, `X-Forwarded-For` and `X-Request-ID` down with it. |
 
 ## Routine operations
 

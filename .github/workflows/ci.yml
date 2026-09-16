@@ -268,7 +268,13 @@ jobs:
           WEB_IMAGE=banking-web
           DJANGO_SETTINGS_MODULE=config.settings.prod
           DJANGO_SECRET_KEY={secrets.token_urlsafe(48)}
-          DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,app_blue,app_green
+          # **Deliberately no service or upstream name here, and that is the regression guard.**
+          # nginx forwards `Host: $host` only because deploy/nginx/proxy-headers.conf is included
+          # inside each proxied location; drop that include and Host silently falls back to
+          # `$proxy_host`, the upstream group name. Listing `app` here would make that fallback work
+          # and hide the bug again — which is exactly what it did, until the readiness step started
+          # answering 400 the moment the name was removed.
+          DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
           CSRF_TRUSTED_ORIGINS=http://localhost:8080
           DOMAIN=localhost
           POSTGRES_USER=banking
