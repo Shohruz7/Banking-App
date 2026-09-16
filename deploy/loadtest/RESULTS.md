@@ -10,7 +10,7 @@ the run recorded here, not a target.
 | | |
 |---|---|
 | Host | Apple Silicon laptop, Docker Desktop (Linux VM) |
-| Topology | the real one — nginx → gunicorn (2 uvicorn workers) → Postgres 16 / Redis 7, all containers |
+| Topology | the real one — nginx → two app replicas (2 uvicorn workers each) → Postgres 16 / Redis 7, all containers |
 | Measured from | a `grafana/k6` container on the compose network, addressing `web` by service name |
 | Dataset | `seed_demo --seed 1` — 400 customers, 2,427 accounts, 13,011 entries, 27,228 journal lines |
 | Postgres | `fsync=off` (the CI override), so write latency is optimistic |
@@ -30,16 +30,16 @@ against 0.5. Read mix weighted toward the endpoints that derive — 40% `/accoun
 
 ## Results
 
-**21,230 requests at 122.8 rps, 0.00% failed, 0 throttled, and the ledger still balanced.**
+**21,585 requests at 125.3 rps, 0.00% failed, 0 throttled, and the ledger still balanced.**
 
 | Endpoint | median | p90 | p95 | p99 | max |
 |---|---|---|---|---|---|
-| `/accounts/` (derived balances) | 9.6 ms | 37.6 ms | **52.0 ms** | 104.1 ms | 176.7 ms |
-| `/holdings/` (derived + valued) | 9.5 ms | 37.0 ms | **51.3 ms** | 96.5 ms | 184.2 ms |
-| `/orders/` (plain indexed read) | 10.4 ms | 39.3 ms | **53.0 ms** | 107.9 ms | 183.6 ms |
-| `/portfolio/` (three aggregates) | 11.6 ms | 42.8 ms | **57.1 ms** | 109.0 ms | 205.0 ms |
-| `POST /transfers/` (locked write) | 17.6 ms | 63.0 ms | **96.0 ms** | 205.7 ms | 264.2 ms |
-| all | 10.5 ms | 39.7 ms | **54.4 ms** | 106.8 ms | 264.2 ms |
+| `/accounts/` (derived balances) | 5.4 ms | 15.8 ms | **23.6 ms** | 43.2 ms | 99.7 ms |
+| `/holdings/` (derived + valued) | 5.6 ms | 16.6 ms | **24.4 ms** | 42.1 ms | 78.3 ms |
+| `/orders/` (plain indexed read) | 5.6 ms | 16.3 ms | **26.3 ms** | 40.1 ms | 105.8 ms |
+| `/portfolio/` (three aggregates) | 6.9 ms | 18.4 ms | **26.4 ms** | 42.9 ms | 79.4 ms |
+| `POST /transfers/` (locked write) | 14.0 ms | 33.4 ms | **52.3 ms** | 81.2 ms | 126.9 ms |
+| all | 6.0 ms | 17.7 ms | **25.6 ms** | 44.2 ms | 126.9 ms |
 
 `check_ledger_invariants` passes after the run — zero-sum, share conservation, no negative asset
 balance, no negative holding — across the ~570 transfers the write scenario posted.
@@ -50,6 +50,28 @@ derives cash, holdings, valuation and realized P&L on every request and lands wi
 size, deriving balances on read costs almost nothing. That is a claim about 27,000 journal lines,
 not a general one — the cost of a `SUM` grows with an account's lifetime line count, and one run at
 one size cannot show where that stops being true.
+
+## The three topologies, measured
+
+Same profile, same dataset, same machine — run once before the connection pool, once after, and
+once after the second app replica.
+
+| | 1 replica, no pool | 1 replica, pooled | 2 replicas, pooled |
+|---|---|---|---|
+| failed | 5.35% | 0.00% | **0.00%** |
+| median | 20.7 ms | 9.0 ms | **6.0 ms** |
+| p95 | 108.5 ms | 48.9 ms | **25.6 ms** |
+| p99 | 168.0 ms | 87.9 ms | **44.2 ms** |
+| throughput | 120.1 rps | 123.3 rps | **125.3 rps** |
+| peak Postgres connections | 100 (exhausted) | 26 | **33** |
+
+Throughput barely moves because the harness paces itself — it is pinned near 123 rps by the rate
+limits, not by the server. Latency is where the change shows: the pool halved it by removing
+connection churn, and the second replica halved it again by doubling the worker count behind nginx.
+The replicas exist for gapless releases (ADR-0043); the latency was a side effect.
+
+The `t3.small` caveat gets sharper here, not softer. Four gunicorn workers plus two Celery forks on
+2 burstable vCPUs is a different machine from the one these numbers came off.
 
 ## What the first run found
 
