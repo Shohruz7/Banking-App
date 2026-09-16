@@ -323,14 +323,37 @@ jobs:
           done
 
           echo " FAILED"
-          echo "--- status and body ---"
-          curl -s -o /tmp/ready_body -w 'HTTP %{http_code}\n' http://localhost:8080/api/v1/ready/ || true
-          cat /tmp/ready_body || true
-          echo
-          echo "--- nginx ---"
-          docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci logs --tail 40 web
-          echo "--- replicas ---"
-          docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci logs --tail 40 app_blue app_green
+          C="docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci"
+
+          # Collected into a file and re-emitted as a `::error::` annotation, because a run's *logs*
+          # need an authenticated token to read while its annotations do not. When this step first
+          # went red the only thing visible without credentials was "Process completed with exit
+          # code 1", which is how a two-line failure cost three round trips.
+          {
+            echo "curl localhost:8080 -> $(curl -s -o /tmp/rb -w '%{http_code}' http://localhost:8080/api/v1/ready/ || echo 'connection failed')"
+            echo "body: $(head -c 300 /tmp/rb 2>/dev/null)"
+            echo
+            # Splits the two hops. If this succeeds the app is fine and nginx or the published port
+            # is the problem; if it fails the replica never came up however healthy compose says it is.
+            echo "nginx -> app_blue direct:"
+            $C exec -T web wget -qO- --timeout=5 http://10.99.0.11:8000/api/v1/ready/ 2>&1 | head -c 300 || echo "  unreachable"
+            echo
+            echo "nginx -> app_green direct:"
+            $C exec -T web wget -qO- --timeout=5 http://10.99.0.12:8000/api/v1/ready/ 2>&1 | head -c 300 || echo "  unreachable"
+            echo
+            echo "assigned addresses:"
+            $C ps -q | while read -r cid; do
+              docker inspect -f '  {{.Name}} {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cid"
+            done
+            echo
+            echo "app_blue log tail:"
+            $C logs --tail 25 app_blue 2>&1 | tail -25
+            echo "nginx log tail:"
+            $C logs --tail 15 web 2>&1 | tail -15
+          } > /tmp/diag 2>&1
+
+          cat /tmp/diag
+          echo "::error title=Readiness failed::$(python -c "import sys;sys.stdout.write(open('/tmp/diag').read()[:4000].replace('%','%25').replace('\r','').replace('\n','%0A'))")"
           exit 1
 
       - name: nginx answers its own liveness probe
