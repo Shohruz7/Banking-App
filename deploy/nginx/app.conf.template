@@ -28,6 +28,27 @@ server {
     proxy_set_header X-Request-ID $request_id_final;
     proxy_redirect off;
 
+    # --- failing over between the two app replicas (ADR-0043) -------------------------------
+    #
+    # A replica being recreated is briefly a routable address with nothing listening, so a connect
+    # can hang rather than be refused. The default here is 60s, which would turn a one-second
+    # container swap into a minute of stalled requests before nginx tried the other peer.
+    proxy_connect_timeout 2s;
+    # `error timeout` is nginx's default and is restated here because it is now a decision.
+    #
+    # **`non_idempotent` is deliberately absent.** A refused connection fails *before* the request
+    # body is written, and nginx replays those to the next peer whatever the method — the
+    # `non_idempotent` restriction only governs requests already sent. Adding it would make a POST
+    # replayable after its body was sent, and `idempotency_key` on /api/v1/transfers/ is
+    # `required=False` (ledger/serializers.py), so a keyless transfer would post twice. That is a
+    # ledger corruption bug with a 100% reproduction, traded for nothing.
+    #
+    # `http_502 http_503 http_504` are absent for a different reason: ReadinessView returns a real
+    # 503 when Postgres is down, and retrying that on the other replica would just double the load
+    # during a database incident.
+    proxy_next_upstream error timeout;
+    proxy_next_upstream_tries 2;
+
     # --- security headers ------------------------------------------------------------------------
     #
     # An include, not inline directives, and the reason is an nginx rule that removes headers

@@ -111,4 +111,11 @@ CMD ["gunicorn", "config.asgi:application", \
      # deadline — a long-lived WebSocket is not a stuck worker, and treating it as one would kill
      # every open socket every 30 seconds.
      "--timeout", "120", \
+     # Longer than nginx's `keepalive_timeout 60s` on the upstream block, so *nginx* is always the
+     # side that closes an idle pooled connection. gunicorn's default is 2s, which inverts that: the
+     # backend closes first, and nginx can write a request onto a connection just as the FIN lands.
+     # That path marks the request as already sent, and a POST that has been sent is not replayed to
+     # the surviving replica — so the inversion shows up as a 502 on exactly the requests that must
+     # not be retried. See ADR-0043.
+     "--keep-alive", "65", \
      "--graceful-timeout", "30"]
