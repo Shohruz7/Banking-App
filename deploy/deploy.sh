@@ -2,14 +2,17 @@
 #
 # Ship a release. Run on the box, from /srv/banking.
 #
-#     ./deploy/deploy.sh <git-sha>
+#     ./deploy/deploy.sh <git-sha> [web-tag]
 #
 # Pull, migrate, roll the app replicas one at a time, converge the rest, wait for readiness, prune.
 # Not a rebuild — the images were built and tested by CI (ADR-0033), and a `t3.small` doing `npm ci`
 # plus a Vite build would OOM on the Node step anyway. Building here would also mean deploying an
 # artifact nothing had tested.
 #
-# **The API and the WebSocket roll without dropping a request (ADR-0043).**
+# **The API and the WebSocket roll without dropping a request (ADR-0043).** The edge does not: `web`
+# owns port 80, and while it is being recreated the port is unbound. That is why it has its own tag
+# — a backend-only release leaves it alone, and a frontend release still blips for about a second.
+# Pass the web tag as the second argument, or omit it to leave `web` on whatever it is running.
 #
 # Rollback is this same script with an older SHA. That is the whole reason compose pins `${IMAGE_TAG}`
 # and never `latest`: with a floating tag, "roll back" and "rebuild" are the same command and neither
@@ -18,8 +21,9 @@
 set -euo pipefail
 
 TAG="${1:-}"
+WEB_TAG_ARG="${2:-}"
 if [[ -z "$TAG" ]]; then
-    echo "usage: $0 <image-tag>   (a git sha; see 'docker images' for what is available)" >&2
+    echo "usage: $0 <image-tag> [web-tag]   (git shas; see 'docker images' for what is available)" >&2
     exit 2
 fi
 
@@ -30,10 +34,20 @@ echo "→ deploying ${TAG}"
 
 # Written back so a subsequent bare `docker compose up` uses the same tag rather than silently
 # reverting to whatever the file said before.
-if grep -q '^IMAGE_TAG=' deploy/.env; then
-    sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${TAG}|" deploy/.env
-else
-    echo "IMAGE_TAG=${TAG}" >> deploy/.env
+set_env() {
+    local key="$1" value="$2"
+    if grep -q "^${key}=" deploy/.env; then
+        sed -i "s|^${key}=.*|${key}=${value}|" deploy/.env
+    else
+        echo "${key}=${value}" >> deploy/.env
+    fi
+}
+
+set_env IMAGE_TAG "$TAG"
+# Only when given. Leaving WEB_TAG alone is what makes a backend-only release leave the edge
+# container untouched, and therefore gapless.
+if [[ -n "$WEB_TAG_ARG" ]]; then
+    set_env WEB_TAG "$WEB_TAG_ARG"
 fi
 
 echo "→ pulling"

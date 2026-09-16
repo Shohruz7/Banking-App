@@ -160,7 +160,13 @@ services:
       - beatstate:/var/run/celery
 
   web:
-    image: ${WEB_IMAGE:-banking-web}:${IMAGE_TAG:-local}
+    # Its **own** tag, and that is what makes a rolling deploy worth anything. This container owns
+    # port 80; while it is being recreated the port is unbound and clients get a connection refusal,
+    # which no amount of blue/green behind it can hide. Pinned to IMAGE_TAG it was recreated on
+    # every release, so every release had a hard gap no matter what the app replicas did. With a tag
+    # derived from the frontend and nginx sources, a backend-only release — the large majority —
+    # leaves this container untouched. Falls back to IMAGE_TAG so nothing breaks if WEB_TAG is unset.
+    image: ${WEB_IMAGE:-banking-web}:${WEB_TAG:-${IMAGE_TAG:-local}}
     environment:
       DOMAIN: ${DOMAIN:-localhost}
     ports:
