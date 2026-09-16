@@ -19,7 +19,9 @@ x-ci-env: &ci-env
 services:
   migrate:
     <<: *ci-env
-  app:
+  app_blue:
+    <<: *ci-env
+  app_green:
     <<: *ci-env
   worker:
     <<: *ci-env

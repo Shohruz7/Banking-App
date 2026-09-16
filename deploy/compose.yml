@@ -25,6 +25,25 @@ x-backend: &backend
     - media:/app/media
   restart: unless-stopped
 
+# The two rolled replicas (ADR-0043). Everything here is what makes replacing one at a time safe.
+x-app: &app
+  <<: *backend
+  expose: ["8000"]
+  # Strictly greater than gunicorn's `--graceful-timeout 30`, never equal to it. Docker sends
+  # SIGTERM, waits this long, then SIGKILLs. At 30 == 30 the kill lands on the same tick gunicorn
+  # starts terminating its own workers, so the graceful window is not 30 seconds, it is a race.
+  stop_grace_period: 35s
+
+# An explicit subnet so the two app replicas can hold fixed addresses — see the `upstream` block in
+# deploy/nginx/nginx.conf, which names them literally. 10.99.0.0/24 rather than letting Docker
+# allocate from 172.16/12, so an unrelated `docker network create` on this box cannot collide, and
+# not 172.31 either, which is the default VPC range.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -76,11 +95,21 @@ services:
       redis: {condition: service_healthy}
     restart: "no"
 
-  app:
-    <<: *backend
-    # The image's CMD: gunicorn supervising uvicorn workers, HTTP and WebSocket on one pool.
-    # No published port — nginx reaches it over the compose network.
-    expose: ["8000"]
+  # Two replicas of the same image, replaced one at a time so a release does not drop a request
+  # (ADR-0043). They are ordinary named services rather than `deploy.replicas` because nginx has to
+  # name them: open-source nginx resolves an upstream host once, at config-parse time, and Docker
+  # deletes a stopped container's DNS record — so a hostname there breaks during exactly the window
+  # a rolling deploy creates. The addresses below are pinned for the same reason and **must match
+  # `upstream app` in deploy/nginx/nginx.conf**; CI asserts that they do.
+  app_blue:
+    <<: *app
+    networks:
+      default: {ipv4_address: 10.99.0.11}
+
+  app_green:
+    <<: *app
+    networks:
+      default: {ipv4_address: 10.99.0.12}
 
   worker:
     <<: *backend
@@ -104,6 +133,10 @@ services:
       # Generous: a cold worker has to import Django, connect to the broker and register its queues
       # before it can answer a ping, and failing during that is not the same as being unhealthy.
       start_period: 60s
+    # Long enough for an in-flight task to finish rather than be redelivered. `CELERY_TASK_ACKS_LATE`
+    # means a SIGKILL mid-task loses nothing — the task is redelivered — so this is about not doing
+    # the work twice, not about correctness.
+    stop_grace_period: 60s
 
   beat:
     <<: *backend
@@ -133,7 +166,11 @@ services:
     ports:
       - "${HTTP_PORT:-80}:80"
     depends_on:
-      app: {condition: service_started}
+      # `service_started`, not `service_healthy`: waiting on the health start_period would leave the
+      # SPA and /healthz unreachable for ~30s on a cold boot, which is a worse trade than nginx
+      # briefly having no live peer — it answers that with the ADR-0006 envelope.
+      app_blue: {condition: service_started}
+      app_green: {condition: service_started}
     volumes:
       # Read-only: nginx needs to read certificates, never to write them. Certbot runs on the host
       # (ADR-0040), so renewal keeps working even when this stack is down.
