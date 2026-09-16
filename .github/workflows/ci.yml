@@ -268,7 +268,7 @@ jobs:
           WEB_IMAGE=banking-web
           DJANGO_SETTINGS_MODULE=config.settings.prod
           DJANGO_SECRET_KEY={secrets.token_urlsafe(48)}
-          DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,app
+          DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,app_blue,app_green
           CSRF_TRUSTED_ORIGINS=http://localhost:8080
           DOMAIN=localhost
           POSTGRES_USER=banking
@@ -339,7 +339,7 @@ jobs:
 
       - name: Seed a market and a dataset
         run: |
-          C="docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci exec -T app"
+          C="docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci exec -T app_blue"
           $C python manage.py seed_instruments --ticks 30 --seed 1
           $C python manage.py seed_demo --users 6 --days 60 --seed 1
 
@@ -364,7 +364,7 @@ jobs:
       # proved that a message published in a Celery worker reaches a socket held by a *different*
       # process. Here the two are genuinely separate containers on a real Redis, which is the
       # production topology rather than a simulation of it.
-      - name: A tick published in the worker reaches a socket in the app
+      - name: A tick published in the worker reaches a socket in an app replica
         run: |
           pip install --quiet 'websockets>=13'
           symbol=$(docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci \
