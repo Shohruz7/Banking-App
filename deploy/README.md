@@ -11,9 +11,10 @@ and renting an instance is a decision with a monthly bill attached.
 ```
 browser ──▶ nginx (web container)
              ├── /            the built SPA, with a try_files fallback
-             ├── /api/  ──┐
-             ├── /ws/   ──┼──▶ gunicorn + uvicorn workers (app container)
-             └── /static ─┘         │
+             ├── /api/  ──┐    upstream app
+             ├── /ws/   ──┼──▶ ├─ app_blue  10.99.0.11:8000   gunicorn + uvicorn workers
+             └── /static ─┘    └─ app_green 10.99.0.12:8000   (rolled one at a time)
+                                    │
                                     ├──▶ Postgres
                                     └──▶ Redis ── cache (db 0)
                                                 ├─ Celery broker (db 1) ──▶ worker, beat
@@ -50,7 +51,9 @@ Until step 2, the deploy job skips rather than failing, so `main` is not permane
 box does not exist.
 
 Sizing: **`t3.small` (2 GB), not `t3.micro`.** Steady state is roughly Postgres 200 MB + Redis 30 MB
-+ two gunicorn workers 300 MB + Celery 150 MB + Beat 100 MB + nginx 10 MB ≈ 800 MB. The 2 GB swapfile
++ **two app replicas at ~300 MB each** + Celery 150 MB + Beat 100 MB + nginx 10 MB ≈ 1.1 GB. The
+second replica is the cost of rolling deploys (ADR-0043); `GUNICORN_CMD_ARGS=--workers 1` in `.env`
+halves it with no rebuild if the box ever needs the room. The 2 GB swapfile
 `bootstrap.sh` adds is not for running the app; it is for the spikes — a `pg_dump` alongside
 everything else, or an image layer decompressing while all six containers are up. Without it those
 meet the OOM killer, which picks the largest process, which is Postgres.
@@ -70,13 +73,13 @@ and TOTP secret in the database — the ciphertext survives and nothing can read
 |---|---|
 | `DB_SSLMODE=disable` | `prod.py` defaults to `require`, which is right when the database is on another host. Here it is a container on this host's private bridge with no published port, and `postgres:16-alpine` ships no certificate, so `require` simply fails to connect. Set it back to `require` the day the database leaves this box. |
 | `CSRF_TRUSTED_ORIGINS` | The SPA uses bearer tokens and does not care. **Django admin login 403s without it** the moment it is behind a proxy. Scheme included, no path. |
-| `DJANGO_ALLOWED_HOSTS` includes `localhost` | The app container's healthcheck requests `http://127.0.0.1:8000/api/v1/ready/`, and Django rejects a Host it does not recognise. Safe: the container publishes no ports. |
+| `DJANGO_ALLOWED_HOSTS` includes `localhost` | Each app replica's healthcheck requests `http://127.0.0.1:8000/api/v1/ready/`, and Django rejects a Host it does not recognise. Safe: the container publishes no ports. |
 
 ## Routine operations
 
 ```sh
-./deploy/deploy.sh <sha>          # ship, or roll back — same command, different tag
-docker compose -f deploy/compose.yml --env-file deploy/.env logs -f app
+./deploy/deploy.sh <sha> [web-tag]   # ship, or roll back — same command, different tag
+docker compose -f deploy/compose.yml --env-file deploy/.env logs -f app_blue app_green
 docker compose -f deploy/compose.yml --env-file deploy/.env ps
 ```
 
@@ -85,10 +88,27 @@ exactly what makes that true: with a floating tag, "roll back" and "rebuild" bec
 and neither is reproducible. The previous images stay on disk until a *healthy* release prunes them,
 so the tag you want is in `docker images`.
 
-There is a gap of a few seconds during a restart when nginx has no backend. That is not hidden —
-nginx answers it with the ADR-0006 error envelope as a 503, so the client reports an outage rather
-than failing to parse an HTML error page. A single box does not get zero-downtime deploys, and
-pretending otherwise would mean a second box.
+**The API and the WebSocket roll without dropping a request. The edge still restarts when the
+bundle changes.** Two app replicas, `app_blue` and `app_green`, are replaced one at a time behind a
+statically-addressed nginx upstream (ADR-0043); CI proves it by holding one replica down and
+asserting traffic still succeeds. What does not roll is `web`, which owns port 80 — so it carries
+its own content-derived tag, and a backend-only release leaves it untouched. A frontend release
+still blips for about a second.
+
+Two things follow that are easy to miss:
+
+- **Migrations must be expand-only.** `deploy.sh` migrates before it rolls either replica, so the
+  previous release's code serves against the new schema for the length of the deploy. Add in one
+  release, remove in a later one. A CI job refuses the destructive operations without an explicit
+  `EXPAND-CONTRACT-EXEMPT:` marker.
+- **Never put `nginx -s reload` in the deploy path.** The upstream is two literal addresses for
+  exactly this reason: with hostnames, a reload while a peer is down fails to parse, never sends
+  SIGHUP, and leaves nginx silently serving stale addresses.
+
+With both replicas down there is still no backend, and that is not hidden — nginx answers with the
+ADR-0006 error envelope as a 503, so the client reports an outage rather than failing to parse an
+HTML error page. None of this is high availability: one box, one Postgres, one Redis. It buys the
+outage that happens on a schedule, not the one that happens by surprise.
 
 ### Certificates
 
@@ -162,7 +182,7 @@ an error on BSD date, so the drill could not be rehearsed cleanly on a laptop at
 ### Re-seeding
 
 ```sh
-docker compose -f deploy/compose.yml --env-file deploy/.env exec app \
+docker compose -f deploy/compose.yml --env-file deploy/.env exec app_blue \
   python manage.py seed_demo --seed 1
 ```
 
@@ -191,6 +211,10 @@ docker compose -f deploy/compose.yml --env-file deploy/.env exec web nginx -s re
 
 No Kubernetes, Terraform, autoscaling or managed database — one box, and the compose file is the
 whole topology. No Sentry, metrics or tracing: there are health and readiness probes and structured
-logs with request ids (ADR-0028), and the honest next step is a log shipper, not an agent. No
-blue/green. No S3 for media (ADR-0039) — the trigger that would invert that is a second app host, and
-the change is one entry in `STORAGES`.
+logs with request ids (ADR-0028), and the honest next step is a log shipper, not an agent. No S3 for
+media (ADR-0039) — the trigger that would invert that is a second app *host*, and the change is one
+entry in `STORAGES`; two replicas on one box share the volume, so it has not been triggered.
+
+The two app replicas are not high availability and are not capacity (ADR-0043). They exist so a
+release does not drop requests. Postgres, Redis and the box itself remain single points of failure,
+and the honest fix for those is a second machine.

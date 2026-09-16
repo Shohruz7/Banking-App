@@ -19,7 +19,7 @@ flowchart LR
         nginx["nginx<br/>bundle · /api · /ws · /static"]
     end
 
-    subgraph app_tier["app container"]
+    subgraph app_tier["app_blue + app_green<br/>rolled one at a time"]
         gunicorn["gunicorn + uvicorn workers<br/>HTTP and WebSocket, one pool"]
     end
 
