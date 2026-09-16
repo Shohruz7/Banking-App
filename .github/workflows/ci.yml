@@ -181,6 +181,45 @@ jobs:
   # that the images build, that migrations run exactly once, that nginx routes what the client
   # assumes it routes, and — the item Week 6 wrote down as an honest gap and could not close — that
   # the Redis channel layer carries a message between two containers.
+  # Migrations run before either app replica rolls (ADR-0043), so for the length of a deploy the
+  # previous release's code is serving against the new schema. This refuses anything that removes
+  # what that code may still read. It is the control the deploy runbook used to describe as
+  # "discipline", which is not a control.
+  expand-only-migrations:
+    name: migrations are expand-only
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needs history to diff against. 0 rather than a depth guess, because a squashed PR can
+          # be arbitrarily far from the base.
+          fetch-depth: 0
+
+      - name: Only the migrations this change touches
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch --quiet origin "${{ github.base_ref }}"
+            range="$(git merge-base "$base" HEAD)...HEAD"
+          else
+            # A push to main. HEAD~1 is the previous tip, which is the right comparison for both a
+            # squash-merge and a direct commit.
+            range="HEAD~1 HEAD"
+          fi
+          echo "comparing $range"
+          # shellcheck disable=SC2086
+          changed=$(git diff --name-only $range -- 'backend/*/migrations/*.py')
+          if [ -z "$changed" ]; then
+            echo "no migrations changed"
+            exit 0
+          fi
+          echo "$changed"
+          # shellcheck disable=SC2086
+          python .github/scripts/expand_only_migrations.py $changed
+
   stack:
     name: the deployed stack, end to end
     runs-on: ubuntu-latest
