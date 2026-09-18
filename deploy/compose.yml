@@ -38,11 +38,31 @@ x-app: &app
 # deploy/nginx/nginx.conf, which names them literally. 10.99.0.0/24 rather than letting Docker
 # allocate from 172.16/12, so an unrelated `docker network create` on this box cannot collide, and
 # not 172.31 either, which is the default VPC range.
+#
+# **`ip_range` is what keeps the two pinned addresses reachable as a promise rather than as a
+# coincidence.** With a subnet alone, Docker hands out dynamic addresses from that same subnet
+# starting at .2 — postgres, redis, worker and beat currently take .2 through .5 — and nothing stops
+# it from reaching .11 and .12 once enough containers have come and gone. The two would then be
+# competing for one address, and the container that lost is a replica — so the failure surfaces
+# during a release, as an address conflict with one replica down, which is the worst moment for it.
+# Confining the dynamic pool to the top half of the subnet puts the static pair out of its reach.
 networks:
   default:
     ipam:
       config:
         - subnet: 10.99.0.0/24
+          # The dynamic pool. Everything below .128 is reserved for addresses this file pins by
+          # hand, which today is app_blue and app_green; CI asserts they stay outside this range.
+          ip_range: 10.99.0.128/25
+          # **Explicit, and the stack does not start without it.** Given only a subnet and an
+          # ip_range, Docker places the gateway at the first address of the *range* rather than of
+          # the subnet — 10.99.0.128, which is the /25's own network address. The result is not a
+          # warning: containers then fail to take an address at all, so the embedded resolver on
+          # 127.0.0.11 never answers and every service name stops resolving. What that looks like
+          # from the application is `migrate` timing out in `pool.getconn()` against a Postgres
+          # that is up, healthy and two addresses away. Pinning the gateway at .1 keeps it where
+          # the convention expects it and outside the pool it is not part of.
+          gateway: 10.99.0.1
 
 services:
   postgres:

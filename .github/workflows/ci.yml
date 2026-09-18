@@ -456,6 +456,45 @@ jobs:
           done
           echo "both files agree"
 
+          # The third party to the same invariant. Pinning an address inside the range Docker
+          # allocates dynamically from is not an error at parse time and not an error at `up` time
+          # either, right until the run where a dynamic container happens to take .11 first. Asked
+          # of the *rendered* config rather than by grepping the file, so a value that arrives via
+          # an anchor or an override is still checked.
+          python - <<'PY'
+          import ipaddress, json, subprocess, sys
+
+          # `--format json` so this needs nothing but the standard library. The runner's python
+          # does not reliably have PyYAML, and a check that exists to catch a silent misconfiguration
+          # should not itself fail for a missing dependency.
+          rendered = subprocess.run(
+              ["docker", "compose", "-f", "deploy/compose.yml", "-f", "deploy/compose.ci.yml",
+               "--env-file", "deploy/.env.ci", "config", "--format", "json"],
+              capture_output=True, text=True, check=True,
+          ).stdout
+          config = json.loads(rendered)
+
+          pool = None
+          for entry in config["networks"]["default"]["ipam"]["config"]:
+              if entry.get("ip_range"):
+                  pool = ipaddress.ip_network(entry["ip_range"])
+          if pool is None:
+              sys.exit("no ip_range on the default network: every pinned address is a "
+                       "collision waiting for a container count")
+
+          failures = []
+          for name, service in config["services"].items():
+              pinned = (service.get("networks") or {}).get("default") or {}
+              address = pinned.get("ipv4_address")
+              if address and ipaddress.ip_address(address) in pool:
+                  failures.append(f"{name} pins {address}, inside the dynamic pool {pool}")
+
+          print(f"dynamic pool is {pool}")
+          for failure in failures:
+              print(" ", failure)
+          sys.exit(1 if failures else 0)
+          PY
+
       # The claim ADR-0043 makes, tested rather than asserted: a full blue→green swap under
       # continuous traffic drops nothing.
       - name: A rolling swap drops no request
