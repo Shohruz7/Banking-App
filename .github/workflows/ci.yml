@@ -66,6 +66,17 @@ jobs:
       - name: Migrations are in sync
         run: uv run python manage.py makemigrations --check --dry-run
 
+      # Static, so it belongs in the fast job rather than behind eight containers. nginx inherits
+      # proxy_set_header and add_header into a location only when that location declares none of
+      # its own, and this project has been bitten by that once per directive family: every proxied
+      # location silently dropped Host, X-Forwarded-For, X-Forwarded-Proto and X-Request-ID for nine
+      # weeks, and `location = /index.html` served the app's own HTML with no CSP. Both are invisible
+      # at parse time, at runtime and in the access log, which is exactly why a reviewer cannot be
+      # the control.
+      - name: nginx locations keep the headers they look like they send
+        working-directory: .
+        run: python .github/scripts/nginx_header_inheritance.py deploy/nginx/app.conf.template
+
       # The one command that would have caught the missing STATIC_ROOT. Runs against prod settings
       # with throwaway secrets: what is being checked is the *configuration*, not these values.
       - name: Deployment checks
@@ -76,6 +87,33 @@ jobs:
           CACHE_URL: locmemcache://
           FIELD_ENCRYPTION_KEYS: ci:ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
         run: uv run python manage.py check --deploy --fail-level WARNING
+
+      # Asserted here rather than in the suite because this is the one place prod settings are
+      # actually loaded; the suite runs under config.settings.test, and reloading a settings module
+      # to inspect it does not re-evaluate the base module it star-imports.
+      #
+      # X-Forwarded-Proto is the one forwarded header with no end-to-end assertion, and the reason
+      # is structural: proving it through nginx means turning SECURE_SSL_REDIRECT on, which makes
+      # every request redirect including each replica's own healthcheck, so the stack will not
+      # start. It is covered in halves instead. nginx_header_inheritance.py proves nginx sends it,
+      # tests/test_audit_context.py proves Django honours it, and this proves the deployment asks
+      # Django to. Without the pair below, a stack behind TLS answers every request with a redirect
+      # to a scheme it cannot observe it already has.
+      - name: prod trusts the forwarded protocol header
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.prod
+          DJANGO_SECRET_KEY: ci-only-placeholder-key-not-used-to-sign-anything-at-all
+          DJANGO_ALLOWED_HOSTS: example.com
+          CACHE_URL: locmemcache://
+          FIELD_ENCRYPTION_KEYS: ci:ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
+        run: |
+          uv run python -c "
+          from django.conf import settings
+          assert settings.SECURE_PROXY_SSL_HEADER == ('HTTP_X_FORWARDED_PROTO', 'https'), \
+              f'prod does not trust the forwarded protocol: {settings.SECURE_PROXY_SSL_HEADER!r}'
+          assert settings.SECURE_SSL_REDIRECT is True, 'prod stopped redirecting to https'
+          print('prod reads X-Forwarded-Proto and redirects to https')
+          "
 
       # `--cov` alone printed a number and exited 0 regardless; the gate lives in pyproject.toml.
       - name: Tests (pytest)
@@ -562,6 +600,176 @@ jobs:
         run: |
           docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci \
             exec -T app_blue python manage.py check_ledger_invariants
+
+      # ------------------------------------------------------------------------------------------
+      # The forwarded headers, asserted rather than assumed
+      # ------------------------------------------------------------------------------------------
+      #
+      # `nginx_header_inheritance.py` in the fast job proves the includes are *written*. These prove
+      # they are *live*: that the headers survive the proxy hop and that Django reads them the way
+      # ADR-0038 says it does. Both halves are needed, because the failure mode of the bug they
+      # guard was that everything looked right and nothing said otherwise.
+      #
+      # Through the audit log rather than a debug endpoint. `AuditContextMiddleware` already records
+      # the request id and the client address on every audited write, so the production path is the
+      # thing under test and no new surface is added to assert it.
+      - name: X-Request-ID and X-Forwarded-For survive the proxy hop
+        run: |
+          C="docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci"
+          token=$(curl -fsS -X POST http://localhost:8080/api/v1/auth/token/ \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"demo","password":"demo-password-1234"}' \
+            | python -c 'import sys,json; print(json.load(sys.stdin)["access"])')
+
+          accounts=$(curl -fsS -H "Authorization: Bearer $token" http://localhost:8080/api/v1/accounts/)
+          source=$(echo "$accounts" | python -c 'import sys,json; print(json.load(sys.stdin)["results"][0]["id"])')
+          dest=$(echo "$accounts" | python -c 'import sys,json; print(json.load(sys.stdin)["results"][1]["id"])')
+
+          trace="ci-$(date +%s)-$RANDOM"
+
+          # A client-supplied X-Forwarded-For is deliberately included. nginx appends its own
+          # observation with $proxy_add_x_forwarded_for, so the header arrives as
+          # "203.0.113.9, <nginx's peer>" and the two readers disagree on purpose: the audit log
+          # takes the leftmost (what the client claims about itself, evidence) and the throttle
+          # takes the rightmost (what nginx observed, an access-control input). ADR-0038 documents
+          # that asymmetry; this is the first thing that checks it.
+          returned=$(curl -fsS -D /tmp/h -o /tmp/b -X POST http://localhost:8080/api/v1/transfers/ \
+            -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' \
+            -H "X-Request-ID: $trace" \
+            -H 'X-Forwarded-For: 203.0.113.9' \
+            -d "{\"source_account\":\"$source\",\"destination_account\":\"$dest\",\"amount\":\"1.00\",\"description\":\"header proof\"}" \
+            -w '%{http_code}')
+          echo "transfer -> $returned"
+          cat /tmp/b; echo
+
+          # 1. The id comes back to the caller. nginx.conf has claimed this since it was written.
+          grep -i "^x-request-id: $trace" /tmp/h \
+            || { echo "the request id was not returned to the client"; cat /tmp/h; exit 1; }
+
+          # 2. The same id, and the claimed address, reached the audit row.
+          $C exec -T app_blue python manage.py shell --no-imports -c "
+          from audit.models import AuditEvent
+          row = AuditEvent.objects.filter(request_id='$trace').order_by('-created_at').first()
+          assert row is not None, 'no audit row carries the request id nginx forwarded'
+          assert row.ip == '203.0.113.9', f'audit row recorded ip={row.ip!r}, not the client claim'
+          print(f'audit row {row.action} request_id={row.request_id} ip={row.ip}')
+          "
+
+      # ADR-0038's actual claim, which was false until the proxy headers were fixed and which every
+      # unit test passed straight through: the throttle is keyed on what nginx observed, so it is
+      # per-client and a client cannot mint itself a fresh bucket.
+      #
+      # Uses the `login` scope: 10/min, unauthenticated, and a wrong password still counts, so the
+      # budget is reachable in eleven requests with no token. Runs late in the job because it leaves
+      # throttle state in Redis with a TTL.
+      # ADR-0038's actual claim, which was false until the proxy headers were fixed and which every
+      # unit test passed straight through: the throttle is keyed on what nginx observed, so it is
+      # per-client and a client cannot mint itself a fresh bucket.
+      #
+      # Uses the `login` scope: 10/min, unauthenticated, and a wrong password still counts, so the
+      # budget is reachable in eleven requests with no token. Runs late in the job because it leaves
+      # throttle state in Redis with a TTL.
+      - name: The throttle is keyed per client, and the key cannot be forged
+        run: |
+          # **Each client gets a pinned address, and that is load-bearing.** The first version of
+          # this used plain `docker run` for the two clients and reported the throttle was not
+          # per-client. It was wrong: Docker reuses a released address, so every sequential one-off
+          # container came up on the same IP and nginx correctly saw one client. Pinning makes them
+          # genuinely different peers rather than trusting the allocator to make them so.
+          #
+          # .20 and .21 sit below the `ip_range` in compose.yml, so they are outside the pool Docker
+          # allocates from and cannot collide with a service.
+          burst() {
+            docker run --rm --network banking_default --ip "$1" curlimages/curl:8.11.1 sh -c "$2"
+          }
+
+          # Quoted heredocs, so the inner script reaches `sh -c` verbatim and the outer shell
+          # expands none of it. An earlier version escaped by hand, got it wrong, and sent the
+          # literal string `198.51.100.$i` as an address, which the server then rejected for the
+          # wrong reason entirely.
+          plain=$(cat <<'SH'
+          for n in 1 2 3 4 5 6 7 8 9 10 11; do
+            curl -s -o /dev/null -w "%{http_code} " -X POST http://web/api/v1/auth/token/ \
+              -H "Host: localhost" -H "Content-Type: application/json" \
+              -d '{"username":"demo","password":"wrong"}'
+          done
+          SH
+          )
+
+          one=$(cat <<'SH'
+          curl -s -o /dev/null -w "%{http_code} " -X POST http://web/api/v1/auth/token/ \
+            -H "Host: localhost" -H "Content-Type: application/json" \
+            -d '{"username":"demo","password":"wrong"}'
+          SH
+          )
+
+          forged=$(cat <<'SH'
+          for ip in 198.51.100.1 198.51.100.2 198.51.100.3 198.51.100.4 198.51.100.5; do
+            curl -s -o /dev/null -w "%{http_code} " -X POST http://web/api/v1/auth/token/ \
+              -H "Host: localhost" -H "Content-Type: application/json" \
+              -H "X-Forwarded-For: $ip" \
+              -d '{"username":"demo","password":"wrong"}'
+          done
+          SH
+          )
+
+          echo "--- 11 attempts from one client ---"
+          codes=$(burst 10.99.0.20 "$plain")
+          echo "$codes"
+          case "$codes" in
+            *429*) echo "  the budget is enforced" ;;
+            *) echo "  no 429 in eleven attempts: the login throttle is not limiting this client"; exit 1 ;;
+          esac
+
+          echo "--- the same client, varying the header it controls ---"
+          # $proxy_add_x_forwarded_for appends nginx's observation to whatever the client sent, and
+          # NUM_PROXIES=1 makes DRF read the rightmost entry, so a forged left-hand value changes
+          # the header and not the key.
+          #
+          # **Every response must be 429, not merely "not a success".** A looser pattern here passed
+          # while the server was answering 500, which it did because the forged address reached
+          # `AuditEvent.ip`. An assertion that accepts any failure cannot tell "the limit held" from
+          # "the request broke", and those need different fixes.
+          forged_codes=$(burst 10.99.0.20 "$forged")
+          echo "$forged_codes"
+          for code in $forged_codes; do
+            [ "$code" = "429" ] || {
+              echo "  a forged X-Forwarded-For produced $code, not 429"
+              echo "  200/401 means it bought a fresh bucket; 5xx means it broke something"
+              exit 1
+            }
+          done
+          echo "  forging the header did not move the key"
+
+          echo "--- a genuinely different client ---"
+          # A second, differently-addressed container, so nginx observes a different peer. This is
+          # the half that proves the limit is per-client rather than global: without it, a single
+          # shared bucket would satisfy both assertions above.
+          other=$(burst 10.99.0.21 "$one")
+          echo "$other"
+          case "$other" in
+            *429*) echo "  a different client inherited the first one's budget: the key is not per-client"; exit 1 ;;
+            *) echo "  a different client has its own budget" ;;
+          esac
+
+      # One header, no credentials, and it used to be a 500 on every audited endpoint. The leftmost
+      # X-Forwarded-For entry is whatever the caller typed and it went straight into
+      # `AuditEvent.ip`, a GenericIPAddressField, which raises on anything that is not an address --
+      # from middleware, after the view had already done its work. Login and registration are
+      # audited and take no credentials, so anyone could reach it.
+      - name: A malformed X-Forwarded-For is not a 500
+        run: |
+          for header in 'not-an-ip-at-all' '<script>alert(1)</script>' '203.0.113.999' '../../etc/passwd'; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/v1/auth/token/ \
+              -H 'Content-Type: application/json' \
+              -H "X-Forwarded-For: $header" \
+              -d '{"username":"demo","password":"wrong"}')
+            echo "  X-Forwarded-For: $header -> $code"
+            case "$code" in
+              5*) echo "a malformed forwarded address reached the audit row"; exit 1 ;;
+            esac
+          done
 
       # A dead backend must still speak the ADR-0006 envelope: the client parses `response.json()`
       # unconditionally, so nginx's HTML error page would arrive as a parse failure rather than as
