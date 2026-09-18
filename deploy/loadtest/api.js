@@ -12,8 +12,11 @@
 //
 // The seeded dataset is ~27,000 journal lines over ~2,400 accounts, so these sums are real work
 // against `line_account_created_idx` — but note what that means for the number. This measures
-// derived reads at *this* data size. The interesting property of a derived-balance design is how
-// the cost grows with an account's lifetime line count, and one run at one size cannot show that.
+// derived reads at *this* data size, where the average account holds a few dozen lines. How the
+// cost grows with an account's lifetime line count is a different question, and one run at one
+// size cannot answer it. `make growth` does: it seeds single accounts to 100, 1k, 10k and 100k
+// lines and measures the same endpoints against each. See the growth-curve section of RESULTS.md,
+// and read it before quoting the p95 below as if it were size-independent.
 //
 // ── Staying inside the rate limits ─────────────────────────────────────────────────────────────
 //
@@ -44,6 +47,18 @@ const fleet = JSON.parse(open('/loadtest/tokens.json'));
 // number has to describe what a client experiences, which includes the proxy hop, the keepalive
 // pool and the gzip pass.
 const BASE = __ENV.BASE || 'http://web';
+
+// **The connection target and the Host header are two different things, and both matter.** BASE
+// reaches nginx by compose service name so the measurement excludes Docker Desktop's userland port
+// forward. But that makes the request's Host `web`, and DJANGO_ALLOWED_HOSTS deliberately lists
+// only `localhost` and `127.0.0.1` — nginx forwards `Host: $host` straight through, so Django
+// answers 400 DisallowedHost to every request.
+//
+// Setting it here rather than widening ALLOWED_HOSTS is the whole point: the list is minimal on
+// purpose, because a name in it that matches an nginx service or upstream is what masked the
+// missing proxy headers for nine weeks (see deploy/nginx/proxy-headers.conf). A real browser sends
+// the site's own domain; this sends the name Django is configured to answer to.
+const HOST_HEADER = __ENV.HOST_HEADER || 'localhost';
 
 // Unique per run, supplied by `make load`. Without it the idempotency keys below repeat between
 // runs against the same database, and the second run collides with the first: same key, different
@@ -104,6 +119,7 @@ export const options = {
 function headersFor(customer) {
     return {
         headers: {
+            Host: HOST_HEADER,
             Authorization: `Bearer ${customer.access}`,
             'Content-Type': 'application/json',
         },
