@@ -73,6 +73,40 @@ and TOTP secret in the database. The ciphertext survives and nothing can read it
 | `CSRF_TRUSTED_ORIGINS` | The SPA uses bearer tokens and does not care. **Django admin login 403s without it** the moment it is behind a proxy. Scheme included, no path. |
 | `DJANGO_ALLOWED_HOSTS` includes `localhost` and `127.0.0.1` | Each app replica's healthcheck requests `http://127.0.0.1:8000/api/v1/ready/`, and Django rejects a Host it does not recognise. Safe: the container publishes no ports. **Do not add an nginx upstream name here.** If requests arrive with `Host: app`, `proxy-headers.conf` is not being included in the location that served them. Adding the name papers over that and takes `X-Forwarded-Proto`, `X-Forwarded-For` and `X-Request-ID` down with it. |
 
+### The forwarded headers, and what now checks them
+
+nginx inherits `proxy_set_header` and `add_header` into a location only when that location declares
+none of its own. Every proxied location declares one, so for nine weeks every proxied location was
+sending none of the forwarded headers, and nothing said so: not the parse, not the runtime, not the
+access log. Four things now assert what used to be assumed.
+
+| Check | Where | What it would catch |
+|---|---|---|
+| Every `location` with `proxy_pass` carries the include | `nginx_header_inheritance.py`, in the fast CI job | The original bug, on the commit that introduced it. Also covers the `add_header` half, which served the SPA's own HTML with no CSP. |
+| `X-Request-ID` round-trips and reaches the audit row | stack job | The header not arriving, or arriving and being ignored |
+| A forged `X-Forwarded-For` does not move the throttle key | stack job | `NUM_PROXIES` wrong or unset, which makes every rate limit in the system decorative |
+| A malformed `X-Forwarded-For` is not a 500 | stack job | Client-controlled text reaching `AuditEvent.ip` |
+
+The last one was a live bug found while writing the third. The leftmost `X-Forwarded-For` entry is
+whatever the caller typed, and it went straight into a `GenericIPAddressField`, so
+`X-Forwarded-For: not-an-ip` was a 500 on every audited endpoint. Login and registration are
+audited and take no credentials, so it needed no account and one header. A claim that is not an
+address is now discarded and the row records what nginx observed instead.
+
+**`X-Forwarded-Proto` is covered in three halves rather than end to end, and the gap is real.**
+Proving it on a live request means turning `SECURE_SSL_REDIRECT` on, which makes every request
+redirect, including each replica's own healthcheck, so the stack never reports healthy and the job
+cannot get far enough to assert anything. What is asserted instead:
+
+| | |
+|---|---|
+| nginx sends it | `nginx_header_inheritance.py` |
+| Django honours it when sent | `tests/test_audit_context.py`, against `SECURE_PROXY_SSL_HEADER` |
+| the deployment asks Django to | a CI step loading prod settings, asserting the header and the redirect are both on |
+
+Nothing joins them on one request. If that header stops arriving, these three still pass and the
+symptom in production is an infinite redirect the moment TLS terminates upstream.
+
 ## Routine operations
 
 ```sh
