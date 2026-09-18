@@ -118,4 +118,10 @@ CMD ["gunicorn", "config.asgi:application", \
      # the surviving replica — so the inversion shows up as a 502 on exactly the requests that must
      # not be retried. See ADR-0043.
      "--keep-alive", "65", \
+     # Gunicorn 26 opens a unix control socket under `$PWD/.gunicorn/` by default. The image runs
+     # as a non-root user and does not own /app, so every replica logged
+     # `[ERROR] Control server error: [Errno 13] Permission denied: '/app/.gunicorn'` on every boot.
+     # Nothing here uses the control interface, and an ERROR that is not an error is worse than
+     # noise: it is what teaches you to skim past the ERROR lines that are real.
+     "--no-control-socket", \
      "--graceful-timeout", "30"]
