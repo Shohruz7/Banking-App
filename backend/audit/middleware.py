@@ -9,6 +9,7 @@ Must sit last in ``MIDDLEWARE`` so ``AuthenticationMiddleware`` has already reso
 here is still anonymous; views and services pass ``actor=`` explicitly, and this fills in the rest.
 """
 
+import ipaddress
 from collections.abc import Callable
 from uuid import uuid4
 
@@ -16,6 +17,26 @@ from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse
 
 from .context import audit_context
+
+
+def _well_formed(candidate: str) -> str | None:
+    """Return ``candidate`` if it is an IP address, else ``None``.
+
+    **This is the difference between a spoofable value and a crash.** ``AuditEvent.ip`` is a
+    ``GenericIPAddressField``, so anything that is not an address raises ``ValueError`` when the row
+    is written — after the work is done, from inside middleware, as a 500 with no useful body. Since
+    the leftmost ``X-Forwarded-For`` entry is whatever the caller typed, that made
+    ``X-Forwarded-For: not-an-ip`` a one-header 500 on every audited endpoint, including the two
+    that take no credentials at all: login and registration.
+
+    Spoofable was always the documented bargain and it is a fair one for evidence. Unvalidated was
+    not part of it: a value that cannot be stored is not evidence, it is an outage.
+    """
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate
 
 
 def client_ip(request: HttpRequest) -> str | None:
@@ -27,12 +48,17 @@ def client_ip(request: HttpRequest) -> str | None:
 
     Note the deliberate contrast with throttling, which takes the *rightmost* entry (ADR-0038):
     what nginx observed, because that one is an access-control input.
+
+    A claim that is not an address is discarded rather than stored, and the row then records what
+    nginx observed instead. That is a strictly better fallback than failing: ``REMOTE_ADDR`` comes
+    off the socket, so it is the one address in this function nobody can choose.
     """
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    # A header that is present but blank falls through to REMOTE_ADDR rather than yielding None:
-    # a proxy that sets an empty header must not cost us the address we already have.
-    client = forwarded.split(",")[0].strip()
-    return client or request.META.get("REMOTE_ADDR") or None
+    # A header that is present but blank, or malformed, falls through to REMOTE_ADDR rather than
+    # yielding None: a proxy that sets an empty header, or a caller that sends rubbish, must not
+    # cost us the address we already have.
+    claimed = _well_formed(forwarded.split(",")[0].strip())
+    return claimed or _well_formed(request.META.get("REMOTE_ADDR", "")) or None
 
 
 class AuditContextMiddleware:

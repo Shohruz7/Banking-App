@@ -70,6 +70,19 @@ def test_request_context_is_immutable() -> None:
         ),
         ({"HTTP_X_FORWARDED_FOR": "  ", "REMOTE_ADDR": "10.0.0.1"}, "10.0.0.1"),
         ({}, None),
+        # A claim that is not an address is discarded, and the row records what nginx observed.
+        # `AuditEvent.ip` is a GenericIPAddressField, so storing the claim raised ValueError from
+        # inside middleware: one header, no credentials, a 500 on login and registration.
+        ({"HTTP_X_FORWARDED_FOR": "not-an-ip", "REMOTE_ADDR": "10.0.0.1"}, "10.0.0.1"),
+        (
+            {"HTTP_X_FORWARDED_FOR": "<script>alert(1)</script>", "REMOTE_ADDR": "10.0.0.1"},
+            "10.0.0.1",
+        ),
+        ({"HTTP_X_FORWARDED_FOR": "203.0.113.999", "REMOTE_ADDR": "10.0.0.1"}, "10.0.0.1"),
+        # Nothing usable anywhere is None rather than a value that cannot be written.
+        ({"HTTP_X_FORWARDED_FOR": "not-an-ip", "REMOTE_ADDR": "also-not-an-ip"}, None),
+        # IPv6 still resolves, so the validation did not narrow what counts as an address.
+        ({"HTTP_X_FORWARDED_FOR": "2001:db8::1, 10.0.0.1"}, "2001:db8::1"),
     ],
 )
 def test_client_ip_resolution(meta: dict[str, str], expected: str | None) -> None:
@@ -175,3 +188,78 @@ def test_the_returned_id_is_the_one_the_request_used_internally() -> None:
     assert response.headers["X-Request-ID"] == observed[0]
     # And it was generated, since the client sent none.
     assert observed[0]
+
+
+def test_a_malformed_forwarded_address_does_not_break_an_audited_write() -> None:
+    """The regression in full, through a real request rather than through ``client_ip`` alone.
+
+    The unit table above pins the resolution. This pins the consequence: the audit row is written
+    from middleware, after the view has done its work, so a value that cannot be stored surfaces as
+    a 500 on a request that otherwise succeeded. Reachable unauthenticated, because a failed login
+    is audited too.
+    """
+    from django.test import Client
+
+    response = Client().post(
+        "/api/v1/auth/token/",
+        data={"username": "nobody", "password": "wrong"},
+        content_type="application/json",
+        headers={"x-forwarded-for": "not-an-ip-at-all"},
+    )
+
+    # 401 is the honest answer for bad credentials. Anything 5xx means the header got that far.
+    assert response.status_code < 500, "a malformed X-Forwarded-For reached the audit row"
+
+
+# ----------------------------------------------------------------------------------------------
+# X-Forwarded-Proto
+# ----------------------------------------------------------------------------------------------
+#
+# The one forwarded header with no end-to-end assertion, and the gap is structural rather than an
+# oversight. Proving it through nginx means turning SECURE_SSL_REDIRECT on, which makes every
+# request redirect, including each replica's own healthcheck, so the stack will not start. It is
+# covered in two halves instead: `.github/scripts/nginx_header_inheritance.py` proves nginx sends
+# it, and these prove Django reads it. Nothing joins the halves on a live request, and
+# `deploy/README.md` says so rather than implying the coverage is complete.
+
+
+@pytest.mark.parametrize(
+    ("forwarded_proto", "expected_secure"),
+    [
+        ("https", True),
+        ("http", False),
+        (None, False),
+    ],
+)
+def test_django_reads_the_forwarded_protocol(
+    settings: object, forwarded_proto: str | None, expected_secure: bool
+) -> None:
+    """``SECURE_PROXY_SSL_HEADER`` is what makes a TLS-terminating proxy legible to Django.
+
+    Without it Django believes every proxied request arrived over plain HTTP. With
+    ``SECURE_SSL_REDIRECT`` on, that is an infinite redirect: Django answers 301 to https, the proxy
+    forwards the retry as http, and Django answers 301 again. The header is what breaks the loop,
+    which is why it being silently dropped was a production outage waiting for TLS to be switched
+    on.
+    """
+    settings.SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")  # type: ignore[attr-defined]
+
+    request = HttpRequest()
+    request.META = {} if forwarded_proto is None else {"HTTP_X_FORWARDED_PROTO": forwarded_proto}
+
+    assert request.is_secure() is expected_secure
+
+
+def test_a_client_cannot_claim_https_when_the_setting_is_unset(settings: object) -> None:
+    """The mirror image: the header means nothing until the deployment opts into trusting it.
+
+    That is the right default. Anything reachable without a proxy in front would otherwise let a
+    caller mark its own request secure by typing a header, and `secure` is what Django consults
+    before it will set a cookie with the Secure flag.
+    """
+    settings.SECURE_PROXY_SSL_HEADER = None  # type: ignore[attr-defined]
+
+    request = HttpRequest()
+    request.META = {"HTTP_X_FORWARDED_PROTO": "https"}
+
+    assert request.is_secure() is False
