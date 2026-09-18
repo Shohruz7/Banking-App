@@ -49,5 +49,21 @@ class AuditContextMiddleware:
             ip=client_ip(request),
             user_agent=request.META.get("HTTP_USER_AGENT", "")[:255],
             request_id=request.headers.get("X-Request-ID") or str(uuid4()),
-        ):
-            return self.get_response(request)
+        ) as ctx:
+            response = self.get_response(request)
+            # Handed back to the caller, which is the half of correlated logging that was missing.
+            # ``deploy/nginx/nginx.conf`` has described this id as "echoed to the client as
+            # ``X-Request-ID``" since it was written, and nothing did it: nginx forwards the header
+            # upstream but adds none to the response, and Django set none either. So the id joined
+            # a log line to an audit row and stopped there, reachable only by someone who already
+            # had shell on the box.
+            #
+            # It matters most for the failures a user is most likely to report and least able to
+            # describe. A 500 already carries the id in its body (ADR-0006), but a slow request, a
+            # wrong balance or a 403 carries nothing, and this makes all of them quotable.
+            #
+            # Set from ``ctx`` rather than re-reading the header, so the value returned is the one
+            # the rest of the request actually used, including the generated one when the client
+            # sent none.
+            response["X-Request-ID"] = ctx.request_id
+            return response
