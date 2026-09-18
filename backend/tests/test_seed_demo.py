@@ -162,3 +162,43 @@ def test_it_refuses_to_run_against_an_empty_market() -> None:
     """No instruments means no trades, and a dataset that silently omits the brokerage half."""
     with pytest.raises(CommandError, match="seed_instruments"):
         call_command("seed_demo", users=2, days=30, seed=1, verbosity=0)
+
+
+def test_the_seed_runs_against_a_database_that_already_has_customers(instruments: None) -> None:
+    """A pre-existing account must not be swept into this run's backdating.
+
+    ``"Opening deposit"`` is the description ``open_starter_accounts`` gives every registration, so
+    filtering the backfill on the description alone also collects the deposits of anyone who signed
+    up through the API before the seed was run. That is not a contrived situation: registering and
+    then seeding is an ordinary thing to do on a demo box, and ``bench_derived_balance`` opens
+    accounts the same way.
+
+    Two things would then go wrong, and the second is the dangerous one. The row count no longer
+    matches the number of customers created, which ``_rewrite``'s ``strict=True`` turns into a loud
+    failure. And had it not been strict, the seed would have rewritten a stranger's opening deposit
+    to *this* dataset's window, moving money out of the period their statement covers.
+    """
+    from ledger.onboarding import open_starter_accounts
+
+    outsider = User.objects.create_user(username="outsider", email="outsider@example.com")
+    outsider_checking, _ = open_starter_accounts(outsider, deposit=Decimal("500.0000"))
+    outsider_entry = (
+        JournalEntry.objects.filter(description="Opening deposit", lines__account=outsider_checking)
+        .distinct()
+        .get()
+    )
+    stamped_before = outsider_entry.created_at
+
+    call_command("seed_demo", users=4, days=90, seed=1, verbosity=0)
+
+    outsider_entry.refresh_from_db()
+    assert outsider_entry.created_at == stamped_before, (
+        "the seed backdated an opening deposit it did not create"
+    )
+    # And the seed's own customers were still backdated, so the scoping did not simply disable it.
+    seeded = JournalEntry.objects.filter(
+        description="Opening deposit",
+        lines__account__owner__email__endswith=f"@{SEED_EMAIL_DOMAIN}",
+    ).distinct()
+    assert seeded.exists()
+    assert all(entry.created_at < stamped_before for entry in seeded)

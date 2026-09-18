@@ -269,7 +269,18 @@ class Command(BaseCommand):
         # The opening deposits are the oldest thing in the ledger, so they are stamped at the start
         # of the window rather than left at "now" — otherwise every account appears to have been
         # funded today and six months of transfers precede their own money.
-        opening_entries = JournalEntry.objects.filter(description="Opening deposit")
+        #
+        # **Scoped to the accounts this run opened, not to the description alone.** `"Opening
+        # deposit"` is the description `open_starter_accounts` gives every registration, so an
+        # unscoped filter also collects the deposits of anyone who signed up through the API, and of
+        # any other command that opens accounts. The row count then no longer matches `records` and
+        # the `strict=True` in `_rewrite` raises — which is the good outcome, and how this was
+        # found. Without it the run would have backdated other people's opening deposits to this
+        # dataset's window, moving money that is not ours out of the period a statement covers.
+        opening_entries = JournalEntry.objects.filter(
+            description="Opening deposit",
+            lines__account__in=[record["checking"] for record in records],
+        ).distinct()
         self._rewrite(list(opening_entries), [window_start - timedelta(minutes=1)] * len(records))
         return records
 
