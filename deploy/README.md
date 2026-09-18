@@ -19,7 +19,7 @@ browser ──▶ nginx (web container)
                                                 └─ channel layer (db 2)
 ```
 
-One origin serves all of it. That is not a preference — the client hardcodes `BASE = "/api/v1"` and
+One origin serves all of it, and that is not a preference. The client hardcodes `BASE = "/api/v1"` and
 builds its socket URL from `window.location.host` (ADR-0030), so a reverse proxy on a single origin
 is the only arrangement it runs in. The upside is that there is no CORS layer anywhere in the system.
 
@@ -30,7 +30,7 @@ is the only arrangement it runs in. The upside is that there is no CORS layer an
 
 ```sh
 ./deploy/bootstrap.sh                      # docker, swap, ufw, certbot, /srv/banking
-cp deploy/.env.example deploy/.env         # then fill it in — see below
+cp deploy/.env.example deploy/.env         # then fill it in; see below
 sudo certbot certonly --webroot -w /var/www/certbot -d bank.example.com
 ./deploy/deploy.sh <git-sha>
 ```
@@ -40,8 +40,8 @@ sudo certbot certonly --webroot -w /var/www/certbot -d bank.example.com
 Two settings, in this order, and the first is not optional:
 
 1. **Settings → Environments → production → Required reviewers.** `environment: production` in the
-   workflow does *not* create a protected environment — GitHub creates it unprotected on first use,
-   and the job runs unattended. This is the approval gate; the workflow cannot assert it.
+   workflow does *not* create a protected environment. GitHub creates it unprotected on first
+   use, and the job runs unattended. This is the approval gate; the workflow cannot assert it.
 2. `gh secret set SSH_HOST --env production` (and `SSH_USER`, `SSH_KEY`), then
    `gh variable set DEPLOY_ENABLED --body true`.
 
@@ -52,7 +52,7 @@ Sizing: **`t3.small` (2 GB), not `t3.micro`.** Steady state is roughly Postgres 
 + **two app replicas at ~300 MB each** + Celery 150 MB + Beat 100 MB + nginx 10 MB ≈ 1.1 GB. The
 second replica is the cost of rolling deploys (ADR-0043); `GUNICORN_CMD_ARGS=--workers 1` in `.env`
 halves it with no rebuild if the box ever needs the room. The 2 GB swapfile
-`bootstrap.sh` adds is not for running the app; it is for the spikes — a `pg_dump` alongside
+`bootstrap.sh` adds is not for running the app; it is for the spikes: a `pg_dump` alongside
 everything else, or an image layer decompressing while all six containers are up. Without it those
 meet the OOM killer, which picks the largest process, which is Postgres.
 
@@ -63,7 +63,7 @@ that refusal is the point (ADR-0027): booting with a key an attacker could read 
 would leave the column *looking* encrypted.
 
 **Back the keyring up somewhere that is not this box.** Losing it means losing every account number
-and TOTP secret in the database — the ciphertext survives and nothing can read it.
+and TOTP secret in the database. The ciphertext survives and nothing can read it.
 
 ### Three settings that will waste an hour if you skip them
 
@@ -71,12 +71,12 @@ and TOTP secret in the database — the ciphertext survives and nothing can read
 |---|---|
 | `DB_SSLMODE=disable` | `prod.py` defaults to `require`, which is right when the database is on another host. Here it is a container on this host's private bridge with no published port, and `postgres:16-alpine` ships no certificate, so `require` simply fails to connect. Set it back to `require` the day the database leaves this box. |
 | `CSRF_TRUSTED_ORIGINS` | The SPA uses bearer tokens and does not care. **Django admin login 403s without it** the moment it is behind a proxy. Scheme included, no path. |
-| `DJANGO_ALLOWED_HOSTS` includes `localhost` and `127.0.0.1` | Each app replica's healthcheck requests `http://127.0.0.1:8000/api/v1/ready/`, and Django rejects a Host it does not recognise. Safe: the container publishes no ports. **Do not add an nginx upstream name here.** If requests arrive with `Host: app`, `proxy-headers.conf` is not being included in the location that served them — adding the name papers over that and takes `X-Forwarded-Proto`, `X-Forwarded-For` and `X-Request-ID` down with it. |
+| `DJANGO_ALLOWED_HOSTS` includes `localhost` and `127.0.0.1` | Each app replica's healthcheck requests `http://127.0.0.1:8000/api/v1/ready/`, and Django rejects a Host it does not recognise. Safe: the container publishes no ports. **Do not add an nginx upstream name here.** If requests arrive with `Host: app`, `proxy-headers.conf` is not being included in the location that served them. Adding the name papers over that and takes `X-Forwarded-Proto`, `X-Forwarded-For` and `X-Request-ID` down with it. |
 
 ## Routine operations
 
 ```sh
-./deploy/deploy.sh <sha> [web-tag]   # ship, or roll back — same command, different tag
+./deploy/deploy.sh <sha> [web-tag]   # ship, or roll back: same command, different tag
 docker compose -f deploy/compose.yml --env-file deploy/.env logs -f app_blue app_green
 docker compose -f deploy/compose.yml --env-file deploy/.env ps
 ```
@@ -89,8 +89,8 @@ so the tag you want is in `docker images`.
 **The API and the WebSocket roll without dropping a request. The edge still restarts when the
 bundle changes.** Two app replicas, `app_blue` and `app_green`, are replaced one at a time behind a
 statically-addressed nginx upstream (ADR-0043); CI proves it by holding one replica down and
-asserting traffic still succeeds. What does not roll is `web`, which owns port 80 — so it carries
-its own content-derived tag, and a backend-only release leaves it untouched. A frontend release
+asserting traffic still succeeds. What does not roll is `web`, which owns port 80, so it carries
+its own content-derived tag and a backend-only release leaves it untouched. A frontend release
 still blips for about a second.
 
 Two things follow that are easy to miss:
@@ -102,8 +102,20 @@ Two things follow that are easy to miss:
 - **Never put `nginx -s reload` in the deploy path.** The upstream is two literal addresses for
   exactly this reason: with hostnames, a reload while a peer is down fails to parse, never sends
   SIGHUP, and leaves nginx silently serving stale addresses.
+- **A change to the network block needs `down` before `up`, and `deploy.sh` will not do it.**
+  Editing `subnet`, `ip_range` or `gateway` and then running a normal release reconfigures the
+  network under the containers already attached to it, and they come back with their service
+  aliases dropped. DNS then fails for every service name while the addresses still route, so the
+  symptom is `migrate` timing out in `pool.getconn()` against a Postgres that is up, healthy and
+  two addresses away. Nothing in the output says "network". Schedule that edit as a short full
+  restart instead:
 
-With both replicas down there is still no backend, and that is not hidden — nginx answers with the
+  ```sh
+  docker compose -f deploy/compose.yml --env-file deploy/.env down     # keeps volumes
+  ./deploy/deploy.sh <sha>
+  ```
+
+With both replicas down there is still no backend, and that is not hidden. nginx answers with the
 ADR-0006 error envelope as a 503, so the client reports an outage rather than failing to parse an
 HTML error page. None of this is high availability: one box, one Postgres, one Redis. It buys the
 outage that happens on a schedule, not the one that happens by surprise.
@@ -111,7 +123,7 @@ outage that happens on a schedule, not the one that happens by surprise.
 ### Certificates
 
 Certbot runs on the **host**, not as a container (ADR-0040). `/etc/letsencrypt` is bind-mounted
-read-only into `web`, so renewal keeps working even when the stack is down — which is precisely when
+read-only into `web`, so renewal keeps working even when the stack is down, which is precisely when
 an ACME sidecar would not. Renewal needs one hook so nginx picks up the new file:
 
 ```sh
@@ -120,7 +132,7 @@ echo 'docker compose -f /srv/banking/deploy/compose.yml exec web nginx -s reload
 sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 ```
 
-**On HSTS preload.** `prod.py` sets `SECURE_HSTS_PRELOAD = True`, which only adds a header — that is
+**On HSTS preload.** `prod.py` sets `SECURE_HSTS_PRELOAD = True`, which only adds a header, and that is
 harmless and correct. *Submitting the domain to the preload list* is the commitment, and with
 `includeSubDomains` it makes every sibling subdomain HTTPS-only in shipped browsers for months, with
 removal taking longer than that. Use a dedicated domain, send the header, and do not submit.
@@ -137,7 +149,7 @@ PDFs on a local volume is only defensible if they leave the box on a schedule. W
 "we chose FileSystemStorage" would just mean "we chose one disk".
 
 `restore.sh` restores into a **scratch** database, prints row counts, and then runs
-`check_ledger_invariants` against the restored copy. It never touches the live database — recovering
+`check_ledger_invariants` against the restored copy. It never touches the live database. Recovering
 for real is the same `pg_restore` with `--dbname` pointed at production, and that should be a
 decision somebody makes at a keyboard. The invariant check is the part that matters: row counts
 prove the dump arrived, not that it arrived *consistent*, and a dump that lands mid-transaction is
@@ -166,16 +178,54 @@ env ENV_FILE=deploy/.env.ci COMPOSE_OVERRIDE=deploy/compose.ci.yml \
 | Wall clock, decrypt → restore → verify | **~1.7 s** |
 
 That number is not an RTO and should not be quoted as one. At this data size the restore is
-dominated by process startup — `pg_restore` itself is ~0.3 s, and turning `fsync` back on changes
+dominated by process startup: `pg_restore` itself is ~0.3 s, and turning `fsync` back on changes
 nothing measurable. What the drill establishes is that the path works end to end and that the
 backup is real; the recovery time that would matter on a bad day is dominated by provisioning a
 box, not by moving 2.8 MB.
 
 **The first run found two bugs, which is the entire argument for running it.** `gpg` failing left
-the plaintext dump — every account number and TOTP secret in the system — sitting in `BACKUP_DIR`
+the plaintext dump, every account number and TOTP secret in the system, sitting in `BACKUP_DIR`
 while the script aborted under `set -e`; there is now a `trap` that removes it on any path that is
 not a successful encryption. And the log timestamps used `date -uIs`, a GNU extension that prints
 an error on BSD date, so the drill could not be rehearsed cleanly on a laptop at all.
+
+### The deploy drill, run
+
+`deploy.sh` takes the same `ENV_FILE` and `COMPOSE_OVERRIDE` overrides the backup scripts do, plus
+`SKIP_PULL` and `SKIP_PRUNE`, so a release can be rehearsed against the stack `make up` brings up.
+The two skips are named for what they skip rather than bundled behind one "rehearsal" flag: a
+laptop has no registry to pull `:local` from, and `docker image prune` is host-wide rather than
+project-scoped, so on a laptop it would delete images belonging to other work.
+
+```sh
+make up
+ENV_FILE=deploy/.env.ci COMPOSE_OVERRIDE=deploy/compose.ci.yml \
+    SKIP_PULL=1 SKIP_PRUNE=1 ./deploy/deploy.sh local
+```
+
+| | |
+|---|---|
+| Replicas recreated | `app_blue`, `app_green`, one at a time, both healthy |
+| `web` container id | unchanged, which is the backend-only release being gapless at the edge |
+| `worker` container id | unchanged |
+| `nginx -s reload` | absent, by design |
+| Readiness through nginx | 200 |
+
+**The first run found three bugs, which is the entire argument for running it**, and the same
+argument the restore drill made a week earlier.
+
+- `set_env` wrote the release tag back with `sed -i "s|...|"`. GNU sed reads `-i` as "in place, no
+  backup"; BSD sed reads the next argument as the backup suffix, consumes the script as one, and
+  fails. So the function that pins the tag every release depends on worked on the box and could not
+  run anywhere else. It writes through a temp file now.
+- The readiness check at the end, the one step that proves the release is actually serving, was
+  hardcoded to `http://localhost/`. Deriving the port from `HTTP_PORT` is not enough either:
+  `compose.ci.yml` pins `8080:80` outright, so under the overlay that variable and the published
+  port disagree. It now asks `compose port web 80`, which is the mapping compose actually applied.
+- Every replica logged `[ERROR] Control server error: [Errno 13] Permission denied: '/app/.gunicorn'`
+  on every boot. Gunicorn 26 opens a control socket under the working directory by default and the
+  image does not own `/app`. Nothing here uses that interface, so it is off. An ERROR line that is
+  not an error is what teaches you to skim past the ones that are.
 
 ### Re-seeding
 
@@ -184,8 +234,8 @@ docker compose -f deploy/compose.yml --env-file deploy/.env exec app_blue \
   python manage.py seed_demo --seed 1
 ```
 
-**There is no `--reset`, and there cannot be.** `AuditEvent` is append-only — a Postgres trigger
-refuses `UPDATE` and `DELETE` — and `AuditEvent.actor` is `PROTECT`, so a customer who has done
+**There is no `--reset`, and there cannot be.** `AuditEvent` is append-only, because a Postgres
+trigger refuses `UPDATE` and `DELETE`, and `AuditEvent.actor` is `PROTECT`, so a customer who has done
 anything cannot be deleted and their audit rows cannot even have the actor nulled. Three guarantees
 meeting, all working as designed. Re-seeding therefore means an empty database:
 
@@ -198,7 +248,7 @@ docker compose -f deploy/compose.yml --env-file deploy/.env down -v
 
 `/admin/` is IP-allowlisted in `deploy/nginx/admin-allowlist.conf` and closed by default. It is the
 weakest surface on the box: Django admin is session auth with a password, and the TOTP enforced on
-`/api/v1/auth/` does not apply to it — a stolen superuser password is the entire control, on a form
+`/api/v1/auth/` does not apply to it. A stolen superuser password is the entire control, on a form
 that can read every account in the ledger. Widen it while demoing, then narrow it again:
 
 ```sh
@@ -207,10 +257,10 @@ docker compose -f deploy/compose.yml --env-file deploy/.env exec web nginx -s re
 
 ## What is deliberately not here
 
-No Kubernetes, Terraform, autoscaling or managed database — one box, and the compose file is the
+No Kubernetes, Terraform, autoscaling or managed database: one box, and the compose file is the
 whole topology. No Sentry, metrics or tracing: there are health and readiness probes and structured
 logs with request ids (ADR-0028), and the honest next step is a log shipper, not an agent. No S3 for
-media (ADR-0039) — the trigger that would invert that is a second app *host*, and the change is one
+media (ADR-0039); the trigger that would invert that is a second app *host*, and the change is one
 entry in `STORAGES`; two replicas on one box share the volume, so it has not been triggered.
 
 The two app replicas are not high availability and are not capacity (ADR-0043). They exist so a
