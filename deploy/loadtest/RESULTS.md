@@ -280,10 +280,25 @@ outside the transaction, so every write committed: the 10,000-line account finis
 10,000 lines and invariants held. `tests/test_ws_rollback.py` asserts that property against a mock;
 this is the first time it has been observed against a real Redis under real load.
 
-Not fixed here, deliberately. Triggering it needs a sustained write rate two orders of magnitude
-above what the shipped throttles permit, and the fix touches the realtime hot path, so it belongs
-in its own change rather than riding along in a benchmark. The write measurements above drop the
-channel layer so they price the overdraft check rather than the failure.
+**Fixed afterwards, in its own change rather than riding along in this one.** The cause was one
+line: `async_to_sync` from a thread with no running event loop builds a new loop per call, and
+`RedisChannelLayer` keys its connection pool on the running loop, so each publish got a fresh pool
+and a fresh socket. Every publish now runs on one long-lived loop per process.
+
+| | before | after |
+|---|---|---|
+| Redis connections per publish | 0.99 | 0.00 |
+| Publishes per second | 905 | 9,217 |
+| Connection errors over a 10,000-transfer burst | 2,242 | 0 |
+| Seeding rate with the channel layer live | ~170 /s | 386-449 /s |
+
+The last row is the one worth reading: the write path was spending more than half its time opening
+a Redis connection and failing, at a rate the throttles would never have produced but a backfill or
+a migration easily could. Measured at 200, 1,000 and 5,000 publishes; the connection count is zero
+at every size, so it is constant rather than merely smaller.
+
+The write measurements above still drop the channel layer, because they price the overdraft check
+and should not move when something unrelated to it changes.
 
 **`make load` was broken and nothing noticed.** `api.js` never set a `Host` header, so it reached
 nginx as `Host: web` and Django answered 400 `DisallowedHost` to every request. That became true
