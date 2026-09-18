@@ -15,13 +15,15 @@ moved, and taking down a committed request because a socket could not be told ab
 strictly worse than the client finding out on its next poll.
 """
 
+import asyncio
 import json
 import logging
+import os
+import threading
 from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
-from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
@@ -63,12 +65,69 @@ def publish(group: str, payload: dict[str, Any]) -> None:
     transaction.on_commit(lambda: _send(group, {"type": STREAM_EVENT, "payload": encoded}))
 
 
+class _PublisherLoop:
+    """One event loop per process, on which every publish runs.
+
+    **This exists because of how the channel layer holds its connections, not for speed.**
+    ``async_to_sync`` from a thread with no running loop builds a *new* event loop for that one
+    call, and ``RedisChannelLayer`` keys its connection pool on the running loop. So every publish
+    got a fresh pool, opened a fresh connection to Redis, and left it to expire in TIME_WAIT.
+    Measured before this change: 0.99 new Redis connections per publish.
+
+    A request rate the shipped throttles permit never reaches that. A sustained write burst does,
+    and then the ephemeral port range runs out and every publish fails with
+    ``Error 99 ... Cannot assign requested address``. The ledger is unharmed when that happens,
+    because a publish is best-effort and outside the transaction (see the module docstring), but
+    every client stops being told anything and the logs fill with a failure that has nothing to do
+    with its cause.
+
+    Giving the whole process one long-lived loop means the layer builds one pool and keeps it.
+
+    **The PID check is not paranoia.** Celery forks its workers, and a thread does not survive
+    ``fork()`` — the child inherits a loop object whose thread does not exist, so every publish
+    would block until its timeout. Rebuilding when the PID changes is the same guard ``asgiref``
+    applies to its own cached loop.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._pid: int | None = None
+        self._lock = threading.Lock()
+
+    def get(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            if self._loop is None or self._loop.is_closed() or self._pid != os.getpid():
+                loop = asyncio.new_event_loop()
+                # Daemon, so it never holds up interpreter shutdown. There is nothing to drain: a
+                # publish that has not been sent by the time the process is going away is a
+                # notification nobody is left to receive.
+                threading.Thread(
+                    target=loop.run_forever,
+                    name="realtime-publisher",
+                    daemon=True,
+                ).start()
+                self._loop = loop
+                self._pid = os.getpid()
+            return self._loop
+
+
+_publisher = _PublisherLoop()
+
+#: A publish is a courtesy and the money has already moved, so it gets a short, bounded wait rather
+#: than the caller's request thread. Previously unbounded, which only looked safe because a
+#: per-call loop cannot be blocked by anything but itself.
+SEND_TIMEOUT_SECONDS = 5.0
+
+
 def _send(group: str, message: dict[str, Any]) -> None:
     layer = get_channel_layer()
     if layer is None:
         return
     try:
-        async_to_sync(layer.group_send)(group, message)
+        future = asyncio.run_coroutine_threadsafe(
+            layer.group_send(group, message), _publisher.get()
+        )
+        future.result(timeout=SEND_TIMEOUT_SECONDS)
     # Blind, deliberately: see the module docstring — a dropped notification must never fail a
     # posting that already committed. BLE001 does not fire because the handler logs with
     # exception info, which is the shape that makes a broad except accountable.
