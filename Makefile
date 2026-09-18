@@ -7,9 +7,12 @@
 
 COMPOSE   := docker compose -f deploy/compose.yml -f deploy/compose.ci.yml --env-file deploy/.env.ci
 IMAGE_TAG ?= local
+#: History depths `make growth` seeds and measures. Override for a quicker pass:
+#:     make growth DEPTHS="100 1000"
+DEPTHS    ?= 100 1000 10000 100000
 
 .DEFAULT_GOAL := help
-.PHONY: help images up down logs ps shell migrate seed smoke load test lint
+.PHONY: help images up down logs ps shell migrate seed smoke load growth test lint
 
 help:  ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -70,6 +73,28 @@ load:  ## Load-test the running stack through nginx, inside its own rate limits
 	  grafana/k6 run /loadtest/api.js
 	@# The half of the claim that makes it a *banking* latency number: the ledger still balances.
 	$(COMPOSE) exec -T app_blue python manage.py check_ledger_invariants
+
+growth:  ## Measure how a derived balance scales with an account's history depth
+	@# The question ADR-0008 is most often asked to defend, and the one `make load` cannot answer:
+	@# it measures at one data size and says so. This varies history length with everything else
+	@# held still. Seeding is quadratic on purpose -- `transfer` derives the source balance to check
+	@# the overdraft, so the 100,000th transfer sums 99,999 lines first -- which makes the seed rate
+	@# it reports a result rather than overhead.
+	@#
+	@# **Run this on a stack you are willing to throw away.** The customers it creates cannot be
+	@# deleted: AuditEvent is append-only by trigger and AuditEvent.actor is PROTECT. `make down`
+	@# afterwards, and see deploy/README.md on re-seeding.
+	$(COMPOSE) exec -T app_blue python manage.py bench_derived_balance \
+	  --depths $(DEPTHS) --explain
+	$(COMPOSE) exec -T app_blue python manage.py shell --no-imports \
+	  < deploy/loadtest/mint_bench_tokens.py > deploy/loadtest/bench_tokens.json
+	@# Same container-on-the-compose-network shape as `make load`, and for the same reason: reaching
+	@# `web` by service name keeps Docker Desktop's userland port forward out of the measurement, so
+	@# the two sets of numbers are comparable.
+	docker run --rm -i --network banking_default \
+	  -v "$(PWD)/deploy/loadtest:/loadtest" \
+	  python:3.12-alpine python /loadtest/growth_curve.py \
+	  --base http://web --tokens /loadtest/bench_tokens.json
 
 test:  ## Both suites
 	cd backend && uv run pytest -q
