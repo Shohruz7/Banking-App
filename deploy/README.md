@@ -223,6 +223,64 @@ while the script aborted under `set -e`; there is now a `trap` that removes it o
 not a successful encryption. And the log timestamps used `date -uIs`, a GNU extension that prints
 an error on BSD date, so the drill could not be rehearsed cleanly on a laptop at all.
 
+### The off-box half, run
+
+The drill above restores from a file that never left the machine, so it proves the dump is sound
+and says nothing about the path that makes it a backup. `BACKUP_S3_URI` had never been set on any
+run. Rehearsed against MinIO, which speaks the same API, so the only untested thing left is the
+bucket itself:
+
+```sh
+docker run -d --name banking-minio-drill --network banking_default -p 9000:9000 \
+  -e MINIO_ROOT_USER=drill-access-key -e MINIO_ROOT_PASSWORD=drill-secret-key \
+  quay.io/minio/minio:latest server /data
+
+export AWS_ACCESS_KEY_ID=drill-access-key AWS_SECRET_ACCESS_KEY=drill-secret-key \
+       AWS_DEFAULT_REGION=us-east-1 AWS_ENDPOINT_URL=http://localhost:9000 \
+       BACKUP_PASSPHRASE=drill-passphrase-thrown-away
+aws s3 mb s3://banking-backups
+
+env BACKUP_DIR=/tmp/banking-s3-drill BACKUP_S3_URI=s3://banking-backups \
+    ENV_FILE=deploy/.env.ci COMPOSE_OVERRIDE=deploy/compose.ci.yml ./deploy/backup.sh
+
+rm -rf /tmp/banking-s3-drill                      # the point: nothing local survives
+aws s3 cp s3://banking-backups/ /tmp/restore/ --recursive
+env ENV_FILE=deploy/.env.ci COMPOSE_OVERRIDE=deploy/compose.ci.yml \
+    ./deploy/restore.sh /tmp/restore/db-<stamp>.dump.gpg
+```
+
+`backup.sh` needed no change for this. The AWS CLI reads `AWS_ENDPOINT_URL` natively from v2.13,
+and `bootstrap.sh` already installs the CLI.
+
+| | |
+|---|---|
+| Shipped | `db-<stamp>.dump.gpg` 3.9 MB · `media-<stamp>.tar.gz.gpg` 0.9 MB |
+| Media archive | 1,699 files, 897 statement PDFs |
+| Local copies before restoring | deleted, so the restore could only come from the bucket |
+| Rows recovered | 402 users · 2,430 accounts · 24,152 entries · 49,510 lines · 1,600 orders · 26,227 audit events |
+| Row counts vs. source | identical on all six |
+| Invariants on the restored copy | hold |
+| Backup and ship | ~4 s |
+| Retrieve and restore and verify | ~2 s |
+
+**Generate statements before running this or the media half proves nothing.** The first attempt
+shipped a 208-byte tarball, because the seeded dataset creates no PDFs and `media/` was empty. That
+half of the backup is the reason ADR-0039 could decline S3 for storage, so a drill that skips it
+tests the less interesting claim. `generate_monthly_statements` for a past period fills it.
+
+One number moves by design. The restored copy ends with one more audit row than the source, because
+`check_ledger_invariants` writes a `ledger.reconciled` row wherever it is pointed: "we looked, and
+here is what we found". The append-only log recording its own verification is the log working, even
+on a scratch copy.
+
+**This run found a third bug, in the step that matters most.** The invariant check died with
+`failed to set up container networking: Address already in use`. A one-off `compose run` inherits
+the address of the service it runs as, and the two app replicas hold pinned addresses so nginx can
+name them (ADR-0043), so with the stack up that address is already taken. The check now runs as the
+`migrate` service, which is the same image with the same environment and no pinned address. Row
+counts had already printed by then, which is exactly how this would have been missed: the drill
+looks like it passed unless you read to the end.
+
 ### The deploy drill, run
 
 `deploy.sh` takes the same `ENV_FILE` and `COMPOSE_OVERRIDE` overrides the backup scripts do, plus
