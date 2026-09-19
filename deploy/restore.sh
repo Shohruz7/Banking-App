@@ -77,15 +77,24 @@ UNION ALL SELECT 'audit events',    count(*) FROM audit_auditevent;
 # against the scratch copy is the difference between "the file restored" and "the data is sound",
 # and it costs one container.
 #
-# `--no-deps` because the dependencies are already up — without it compose re-runs the one-shot
-# `migrate` service against the *live* database, which is not what a restore drill should touch.
+# `--no-deps` because the dependencies are already up, and without it compose would also start the
+# one-shot `migrate` service against the *live* database, which is not what a restore drill should
+# touch.
+#
+# **Run as `migrate`, not as `app_blue`, and that is not cosmetic.** The two replicas hold pinned
+# addresses so nginx can name them (ADR-0043), and a one-off `compose run` inherits the address of
+# the service it runs as. With the stack up, that address is already taken by the running replica
+# and the container dies with `failed to set up container networking: Address already in use`. The
+# `migrate` service is the same image with the same environment and no pinned address, so it is the
+# one that can be started alongside a live stack. Discovered when this check failed during the
+# first end-to-end drill through S3.
 #
 # Set VERIFY_INVARIANTS=0 to skip, for a recovery where the application image is not to hand.
 if [[ "${VERIFY_INVARIANTS:-1}" == "1" ]]; then
     echo "→ checking ledger invariants on the restored copy"
     "${COMPOSE[@]}" run --rm --no-deps \
         -e "DATABASE_URL=${DATABASE_URL%/*}/${TARGET}" \
-        app_blue python manage.py check_ledger_invariants
+        migrate python manage.py check_ledger_invariants
 fi
 
 echo
